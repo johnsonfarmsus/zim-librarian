@@ -1,0 +1,19 @@
+[package]
+name = "librarian"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "librarian"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+librarian-server = { path = "../server" }
+librarian-core = { path = "../core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+open = "5"
+
+[features]
+llama = ["librarian-server/llama", "librarian-core/llama"]

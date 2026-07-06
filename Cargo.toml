@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/zimlib",
+    "crates/core",
+    "crates/server",
+    "crates/librarian",
+]
+# The Tauri shell (crates/app-tauri) is its own workspace so that a plain
+# `cargo build` stays fast and does not pull the Tauri dependency tree.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+strip = true
+opt-level = 3

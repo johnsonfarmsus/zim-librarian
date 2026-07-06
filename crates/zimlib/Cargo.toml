@@ -1,0 +1,12 @@
+[package]
+name = "zimlib"
+description = "Minimal pure-Rust reader for the OpenZIM file format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+memmap2 = "0.9"
+zstd = "0.13"
+xz2 = { version = "0.1", features = ["static"] }

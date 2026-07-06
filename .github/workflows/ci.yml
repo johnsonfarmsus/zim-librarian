@@ -1,0 +1,22 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch test ZIM files
+        run: sh scripts/fetch-testdata.sh
+      - name: Test (core, no llama)
+        run: cargo test --workspace
+      - name: Build headless binary with llama.cpp
+        run: cargo build --features llama -p librarian

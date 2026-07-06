@@ -1,0 +1,23 @@
+# Native desktop/mobile shell. Deliberately its own workspace: the Tauri
+# dependency tree is large, and the core workspace must stay fast to build.
+[package]
+name = "zim-librarian"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+librarian-core = { path = "../core" }
+librarian-server = { path = "../server" }
+
+[features]
+default = ["llama"]
+llama = ["librarian-core/llama", "librarian-server/llama"]

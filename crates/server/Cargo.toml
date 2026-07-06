@@ -1,0 +1,23 @@
+[package]
+name = "librarian-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+librarian-core = { path = "../core" }
+zimlib = { path = "../zimlib" }
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "sync"] }
+tokio-stream = "0.1"
+futures = "0.3"
+rust-embed = "8"
+mime_guess = "2"
+dirs = "5"
+ureq = "2"
+
+[features]
+llama = ["librarian-core/llama"]

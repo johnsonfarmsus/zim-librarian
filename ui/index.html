@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZIM Librarian</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">📚</div>
+      <div style="flex:1">
+        <h1>ZIM Librarian</h1>
+        <div class="tagline">your offline library, answered</div>
+      </div>
+      <button id="about-open" class="small" title="How this works">?</button>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button id="tab-chats" class="tab active" role="tab">Chats</button>
+      <button id="tab-setup" class="tab" role="tab">Library &amp; Model</button>
+    </div>
+
+    <div id="pane-chats" class="pane">
+      <section class="panel grow">
+        <div class="panel-head">
+          <h2>Chats</h2>
+          <button id="new-chat" class="small" title="Start a new chat">+ New</button>
+        </div>
+        <div id="chats" class="chats"></div>
+      </section>
+    </div>
+
+    <div id="pane-setup" class="pane hidden">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Library</h2>
+          <span>
+            <button id="rescan" class="small" title="Re-scan the books folder">⟳ Rescan</button>
+            <button id="add-book" class="small" title="Browse for a .zim file">+ Add</button>
+          </span>
+        </div>
+        <div id="books" class="books"></div>
+        <div class="hint" id="books-dir-hint"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Model</h2></div>
+        <select id="model-select"></select>
+        <div id="catalog" class="catalog"></div>
+        <div id="model-info" class="hint"></div>
+      </section>
+    </div>
+
+    <div class="footer hint">100% offline · answers cite your books</div>
+  </aside>
+
+  <main id="main">
+    <div id="chat"></div>
+    <form id="composer">
+      <textarea id="question" rows="1" placeholder="Ask your library anything…"></textarea>
+      <button id="send" type="submit" title="Send">➤</button>
+    </form>
+  </main>
+
+  <div id="about-modal" class="hidden">
+    <div id="about-box">
+      <div class="fs-head">
+        <b>How ZIM Librarian works</b>
+        <button id="about-close" class="small">✕ Close</button>
+      </div>
+      <div id="about-body">
+        <h3>What is this?</h3>
+        <p>A private, fully offline research assistant. You give it a library of
+        <b>ZIM files</b> (portable offline copies of Wikipedia, wikis, StackExchange,
+        Project Gutenberg and more), and you can ask questions in plain language.
+        Answers come <b>only</b> from your books — every claim carries a numbered
+        citation you can click to read the original passage, highlighted in the
+        source article.</p>
+
+        <h3>Adding books</h3>
+        <p>Get <code>.zim</code> files from
+        <a href="https://library.kiwix.org" target="_blank">library.kiwix.org</a>
+        (free; from ~10&nbsp;MB wikis to all of Wikipedia). Then either drop them
+        into the <b>books folder</b> (shown in the Library tab — picked up
+        automatically, press ⟳&nbsp;Rescan after adding), or click <b>+&nbsp;Add</b>
+        to pick a file anywhere on disk — the file is used where it is, nothing is
+        copied. Each book is indexed once in the background; big books take a while
+        but only the first time.</p>
+
+        <h3>Models</h3>
+        <p>Answers are written by a language model that runs entirely on this
+        device. Pick one from the curated list in the Model section and press
+        <b>Download</b> (the one time the app touches the network, and only when
+        you ask). Advanced: any <code>.gguf</code> file placed in the models
+        folder appears in the picker. With no model installed the librarian still
+        works — it returns the most relevant passages verbatim.</p>
+
+        <h3>Citations you can trust</h3>
+        <p>Sources retrieved for each answer are shown as numbered cards. Numbers
+        like <span class="cite-demo">1</span> in the answer link to the exact
+        passage. If a sentence has no citation, the sources didn't clearly support
+        it — treat it with suspicion. Language models can make mistakes; the
+        citations exist so you can check.</p>
+
+        <h3>Chats</h3>
+        <p>Conversations are saved automatically (Chats tab). Follow-up questions
+        understand context — "how do I configure <i>it</i>?" knows what <i>it</i>
+        refers to. Everything is stored locally on this device.</p>
+
+        <h3>Privacy</h3>
+        <p>No account, no telemetry, no cloud. The app listens only on this
+        device (127.0.0.1) and never sends your questions or documents anywhere.
+        After models and books are downloaded it works with the network fully
+        disconnected, indefinitely.</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="fs-modal" class="hidden">
+    <div id="fs-box">
+      <div class="fs-head">
+        <b>Add a ZIM book</b>
+        <button id="fs-close" class="small">✕ Close</button>
+      </div>
+      <div class="hint">Pick a <code>.zim</code> file — get more at
+        <a href="https://library.kiwix.org" target="_blank">library.kiwix.org</a></div>
+      <div id="fs-quick" class="fs-quick"></div>
+      <div class="fs-path">
+        <button id="fs-up" class="small" title="Parent folder">↑ Up</button>
+        <span id="fs-cur"></span>
+      </div>
+      <div id="fs-list"></div>
+    </div>
+  </div>
+
+  <div id="reader" class="hidden">
+    <div id="reader-bar">
+      <span id="reader-title"></span>
+      <button id="reader-close">✕ Close</button>
+    </div>
+    <iframe id="reader-frame" title="source article"></iframe>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
