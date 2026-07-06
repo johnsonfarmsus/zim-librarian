@@ -65,7 +65,7 @@ body {
 }
 .tab:hover { color: var(--ink); }
 .tab.active { background: var(--bg); color: var(--accent); border-color: var(--accent); }
-.pane { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; }
+.pane { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; overflow-y: auto; }
 .panel.grow { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .panel.grow .chats { flex: 1; }
 

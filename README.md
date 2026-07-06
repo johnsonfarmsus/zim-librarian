@@ -31,6 +31,15 @@ reasoning behind every tooling choice.
 | `crates/app-tauri` | Tauri 2 native shell (desktop + mobile); own workspace, thin wrapper |
 | `ui/` | vanilla HTML/CSS/JS chat frontend (no build step) |
 
+## Platform status
+
+| platform | status |
+|---|---|
+| macOS | ✅ native `.app`/`.dmg` builds via `cargo tauri build` (unsigned — needs an Apple Developer cert for warning-free installs) |
+| Windows / Linux | ✅ code is portable (CPU llama.cpp, no OS-specific deps); CI builds and tests on both; installers produced by the release workflow (`.msi`/`.exe`, `.AppImage`/`.deb`) |
+| iOS / Android | 🚧 architecture supports it (Tauri 2 mobile, responsive UI, portable core); requires `cargo tauri ios|android init` plus Xcode / Android Studio toolchains and store signing — not yet wired up |
+| any OS, no install | `cargo build --release --features llama -p librarian` gives a single ~10 MB binary that serves the UI to your browser |
+
 ## Build & run (developers)
 
 ```sh
