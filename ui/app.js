@@ -52,7 +52,7 @@ async function refreshLibrary() {
     t.className = "t";
     t.textContent = b.title;
     t.title = "Browse this book";
-    if (!b.missing) t.onclick = () => readerOpen(`/home/${b.id}`, b.title, true);
+    if (!b.missing) t.onclick = () => readerOpen(`/home/${b.id}`, b.title);
     const d = document.createElement("div");
     d.className = "d";
     const label = document.createElement("span");
@@ -332,17 +332,13 @@ function setError(bubble, text) {
   bubble.appendChild(s);
 }
 
-function readerOpen(src, title, full = false) {
+function readerOpen(src, title) {
   $("reader-title").textContent = title || "Source";
   $("reader-frame").src = src;
-  const r = $("reader");
-  r.classList.toggle("full", full);
-  r.classList.remove("hidden");
+  $("reader").classList.remove("hidden");
 }
 $("reader-close").onclick = () => {
-  const r = $("reader");
-  r.classList.add("hidden");
-  r.classList.remove("full");
+  $("reader").classList.add("hidden");
   $("reader-frame").src = "about:blank";
 };
 

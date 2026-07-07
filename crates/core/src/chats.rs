@@ -68,7 +68,10 @@ impl ChatStore {
     pub fn open(data_dir: &std::path::Path) -> Result<ChatStore> {
         let dir = data_dir.join("chats");
         std::fs::create_dir_all(&dir)?;
-        Ok(ChatStore { dir, lock: Mutex::new(()), counter: AtomicU32::new(0) })
+        let store = ChatStore { dir, lock: Mutex::new(()), counter: AtomicU32::new(0) };
+        // Enforce the cap immediately, not just on the next message.
+        store.prune(MAX_CHATS);
+        Ok(store)
     }
 
     fn path(&self, id: &str) -> Result<PathBuf> {
