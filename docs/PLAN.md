@@ -86,14 +86,24 @@ accurate citations". That points at lexical retrieval, not vectors:
   (stopword stripping) before querying; the LLM tolerates modest retrieval
   noise because it sees several passages (default 6).
 - tantivy is pure Rust, ~fast (100k+ docs/s indexing), memory-mapped at query
-  time, Apache-2.0. One index directory per ZIM (id = ZIM UUID), so removing
-  a book deletes its index; indexes build in a background thread with visible
-  progress in the UI.
-- **Source diversity** (`merge_passages`): at most 2 passages per article, and
-  any book whose best hit scores ≥ 60% of the global leader is guaranteed a
-  slot — so topics covered by several books draw on several books, without
-  letting clearly-irrelevant books buy a slot just for existing.
-- **Upgrade path:** the `SearchIndex` type is the only retrieval seam; hybrid
+  time, Apache-2.0. ONE global index shared by all books — global corpus
+  statistics make BM25 scores comparable across books, so a 373k-passage wiki
+  can't drown out a small one on term-statistics alone. Removing a book is a
+  delete-by-term on its ZIM UUID; indexing runs on a background thread with
+  visible progress in the UI.
+- **Source quality** (`merge_passages`): at most 2 passages per article and a
+  relevance floor (drop anything under 35% of the top hit). No forced
+  per-book representation — that experiment pulled in irrelevant passages
+  just to have multiple books; diversity now has to be earned by score.
+- **LLM-planned retrieval**: before searching, the model reads the
+  conversation and either writes a self-contained keyword query (resolving
+  pronouns and follow-up context) or declares that no new retrieval is
+  needed (pure refinements reuse the previous sources). Falls back to a
+  keyword heuristic when no model is loaded.
+- **Honest failure**: answers that end up with zero supported citations are
+  prefixed with an explicit "nothing in your library supported this" notice
+  instead of masquerading as grounded.
+- **Upgrade path:** `GlobalIndex` is the only retrieval seam; hybrid
   BM25+embedding reranking can be added later without touching anything else.
 
 ### Inference: llama.cpp **in-process** (`llama-cpp-2` bindings) over Ollama

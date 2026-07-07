@@ -114,6 +114,10 @@ a.cite {
   text-decoration: none; vertical-align: text-top; cursor: pointer;
 }
 a.cite:hover { filter: brightness(1.15); }
+.plan-note {
+  max-width: 720px; margin: -6px auto 10px;
+  font-size: 11.5px; color: var(--muted); font-style: italic;
+}
 .sources { max-width: 720px; margin: -8px auto 18px; display: flex; gap: 8px; flex-wrap: wrap; }
 .source-card {
   border: 1px solid var(--line); background: var(--panel);

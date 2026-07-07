@@ -17,7 +17,10 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 pub use chats::{Chat, ChatMeta, ChatStore, StoredMessage};
-pub use engine::{build_messages, contextual_question, enforce_citations, ChatMessage, Engine, StubEngine};
+pub use engine::{
+    build_messages, contextual_question, enforce_citations, has_citations, plan_retrieval,
+    ChatMessage, Engine, RetrievalPlan, StubEngine,
+};
 pub use index::Passage;
 pub use library::{BookMeta, Library};
 
@@ -69,10 +72,14 @@ impl App {
         });
         app.reload_engine();
         // Pick up anything dropped into the books folder while we were not
-        // running. Off-thread: opening many ZIMs shouldn't delay startup.
+        // running, and reindex books whose index is missing (e.g. after an
+        // index-format change). Off-thread: startup stays instant.
         let lib = app.library.clone();
         std::thread::spawn(move || {
             lib.scan_books_dir();
+            for id in lib.books_needing_index() {
+                let _ = lib.start_indexing(&id);
+            }
         });
         Ok(app)
     }
@@ -155,7 +162,7 @@ impl App {
     ) -> Result<(Vec<Passage>, String)> {
         let passages = self.retrieve_for(history, question)?;
         let messages = build_messages(history, question, &passages);
-        let answer = self.engine().generate(&messages, sink)?;
+        let answer = self.engine().generate(&messages, sink, 1024)?;
         let answer = enforce_citations(&answer, &passages);
         Ok((passages, answer))
     }
@@ -208,6 +215,8 @@ mod tests {
             .unwrap();
         assert!(!sources.is_empty());
         assert!(answer.contains("[1]"));
-        assert_eq!(answer, streamed);
+        // The final answer is the streamed text after citation post-processing.
+        assert!(!streamed.is_empty());
+        assert!(streamed.starts_with(answer.split('[').next().unwrap()));
     }
 }

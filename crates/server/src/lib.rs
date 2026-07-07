@@ -481,12 +481,36 @@ async fn chat(
                 .data(json!({ "id": chat.id, "title": chat.title }).to_string()),
         );
 
-        // Retrieval first (folding in history for follow-up questions), so
-        // the UI can render source cards before tokens arrive.
-        let passages = match app.retrieve_for(&history, &question) {
-            Ok(p) => p,
-            Err(e) => return err(e.to_string()),
+        // Let the model plan retrieval from the conversation: rewrite the
+        // question into a self-contained query, or decide the message is a
+        // refinement that should reuse the previous sources.
+        let engine = app.engine();
+        let plan = librarian_core::plan_retrieval(engine.as_ref(), &history, &question);
+        let k = app.settings.read().unwrap().retrieval_passages;
+        let (passages, plan_info) = match &plan {
+            librarian_core::RetrievalPlan::ReusePrevious => {
+                let prev: Vec<librarian_core::Passage> = chat
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == "assistant" && !m.sources.is_empty())
+                    .map(|m| m.sources.clone())
+                    .unwrap_or_default();
+                if prev.is_empty() {
+                    match app.library.retrieve(&question, k) {
+                        Ok(p) => (p, json!({ "query": question })),
+                        Err(e) => return err(e.to_string()),
+                    }
+                } else {
+                    (prev, json!({ "reused": true }))
+                }
+            }
+            librarian_core::RetrievalPlan::Search(q) => match app.library.retrieve(q, k) {
+                Ok(p) => (p, json!({ "query": q })),
+                Err(e) => return err(e.to_string()),
+            },
         };
+        let _ = tx.send(Event::default().event("plan").data(plan_info.to_string()));
         let _ = tx.send(
             Event::default()
                 .event("sources")
@@ -495,11 +519,17 @@ async fn chat(
         let messages = librarian_core::build_messages(&history, &question, &passages);
         let mut sink =
             |piece: &str| tx.send(Event::default().event("token").data(piece)).is_ok();
-        match app.engine().generate(&messages, &mut sink) {
+        match engine.generate(&messages, &mut sink, 1024) {
             Ok(full) => {
-                // Guarantee inline citations even if the model ignored the
-                // instruction; the UI re-renders the bubble from this event.
-                let full = librarian_core::enforce_citations(&full, &passages);
+                let mut full = librarian_core::enforce_citations(&full, &passages);
+                // A citation-free answer means no source supported it: label
+                // it clearly instead of letting it pass as library-grounded.
+                if !passages.is_empty() && !librarian_core::has_citations(&full) {
+                    full = format!(
+                        "⚠ Nothing in your library supported this answer — what follows is \
+the model's own general knowledge, not your books.\n\n{full}"
+                    );
+                }
                 let _ = app.chats.append(
                     &chat.id,
                     librarian_core::StoredMessage {

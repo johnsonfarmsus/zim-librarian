@@ -17,8 +17,18 @@ pub type TokenSink<'a> = &'a mut (dyn FnMut(&str) -> bool + Send);
 
 pub trait Engine: Send + Sync {
     fn name(&self) -> String;
-    /// Generate a reply to the chat, streaming pieces into `sink`.
-    fn generate(&self, messages: &[ChatMessage], sink: TokenSink) -> Result<String>;
+    /// Generate a reply to the chat, streaming pieces into `sink`, emitting
+    /// at most `max_new_tokens` tokens.
+    fn generate(
+        &self,
+        messages: &[ChatMessage],
+        sink: TokenSink,
+        max_new_tokens: usize,
+    ) -> Result<String>;
+    /// Whether this engine is capable enough to plan retrieval queries.
+    fn can_plan(&self) -> bool {
+        false
+    }
 }
 
 /// Build the grounded prompt: system rules + numbered sources + conversation.
@@ -38,12 +48,19 @@ pub fn build_messages(
         ));
     }
     let system = format!(
-        "You are a librarian assistant. Answer the user's question using ONLY the numbered \
-         sources below. After every claim, cite the source(s) it came from using bracketed \
-         numbers like [1] or [2][3]. Example: \"Alpine Linux uses apk to manage \
-         packages [1]. It supports both wired and wireless networking [2][3].\" \
-         Never cite a number that is not in the source list. \
-         If the sources do not contain the answer, say so plainly and do not guess. \
+        "You are a knowledgeable, friendly librarian. Use the conversation to understand what \
+         the user needs, resolving follow-ups and references to earlier turns.\n\
+         Ground every factual claim in the numbered sources below, placing the citation \
+         immediately after the claim it supports, like [1] or [2][3]. Only cite numbers that \
+         exist in the source list, and never put citations on text a source does not support. \
+         Do not append lists of citations at the end of the answer.\n\
+         Not every retrieved source is relevant — silently ignore the ones that are not. \
+         If the sources do not actually contain what the user needs, say plainly that their \
+         library does not seem to cover this topic (mentioning the closest thing it does \
+         have, if anything) and stop — do not answer from your own general knowledge, and do \
+         not force an answer out of irrelevant sources.\n\
+         If the user asks you to rephrase, shorten, expand or continue, work from the \
+         conversation and keep the citations that still apply.\n\
          Keep answers concise and factual.\n\nSOURCES:\n{sources}"
     );
     let mut msgs = vec![ChatMessage { role: "system".into(), content: system }];
@@ -97,10 +114,88 @@ pub fn contextual_question(history: &[ChatMessage], question: &str) -> String {
     q
 }
 
-/// Guarantee inline citations even when the model ignores the citation
-/// instruction (small models often do): strip citation numbers that don't
-/// exist, and align each substantive uncited sentence to the source passage
-/// with the highest content-word overlap, appending its [n].
+/// How the next answer should be grounded, decided by the model itself when
+/// it is capable, so the librarian uses conversational context intelligently.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RetrievalPlan {
+    /// Search the library with this (possibly rewritten) query.
+    Search(String),
+    /// The message is a refinement (rephrase/shorten/continue…): answer from
+    /// the conversation, reusing the previously retrieved sources.
+    ReusePrevious,
+}
+
+/// Decide what to search for, given the conversation. Capable engines read
+/// the whole conversation and produce a self-contained query (or decide no
+/// new search is needed); otherwise fall back to the keyword heuristic.
+pub fn plan_retrieval(
+    engine: &dyn Engine,
+    history: &[ChatMessage],
+    question: &str,
+) -> RetrievalPlan {
+    if !engine.can_plan() {
+        return RetrievalPlan::Search(contextual_question(history, question));
+    }
+    let system = "You plan library searches for a librarian assistant. Read the conversation \
+        and the user's newest message, then reply with exactly ONE line:\n\
+        - a short keyword search query (3-10 words) that would find the information needed to \
+        answer the newest message: use the concrete terms a reference article on the topic \
+        would contain, and resolve any pronouns or references using the conversation; OR\n\
+        - the single word NONE if the newest message only asks to rephrase, shorten, expand, \
+        summarize or otherwise rework what was already discussed.\n\
+        Output only the query or NONE — no explanation, no quotes.";
+    let mut msgs = vec![ChatMessage { role: "system".into(), content: system.into() }];
+    let tail = history.len().saturating_sub(6);
+    msgs.extend(history[tail..].iter().cloned());
+    msgs.push(ChatMessage { role: "user".into(), content: question.to_string() });
+
+    let mut sink = |_: &str| true;
+    let out = match engine.generate(&msgs, &mut sink, 48) {
+        Ok(o) => o,
+        Err(_) => return RetrievalPlan::Search(contextual_question(history, question)),
+    };
+    let line = out
+        .lines()
+        .map(|l| l.trim().trim_matches(['"', '`', '\'']).trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_string();
+    if line.eq_ignore_ascii_case("none") {
+        if history.is_empty() {
+            return RetrievalPlan::Search(question.to_string());
+        }
+        return RetrievalPlan::ReusePrevious;
+    }
+    if line.is_empty() || line.chars().count() > 120 {
+        return RetrievalPlan::Search(contextual_question(history, question));
+    }
+    RetrievalPlan::Search(line)
+}
+
+/// Whether the text contains at least one citation marker like `[3]`.
+pub fn has_citations(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i + 2 < b.len() {
+        if b[i] == b'[' && b[i + 1].is_ascii_digit() {
+            let mut j = i + 1;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j < b.len() && b[j] == b']' {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Post-process an answer's citations: strip citation numbers that don't
+/// exist, drop trailing bare-citation spam, and align each substantive
+/// uncited sentence to the source passage with the highest content-word
+/// overlap (small models often forget the citation instruction). Text no
+/// source supports deliberately stays uncited.
 pub fn enforce_citations(answer: &str, passages: &[Passage]) -> String {
     let n_sources = passages.len();
     let passage_words: Vec<std::collections::HashSet<String>> =
@@ -121,31 +216,19 @@ pub fn enforce_citations(answer: &str, passages: &[Passage]) -> String {
         }
         out.push_str(&cite_line(line, n_sources, &passage_words));
     }
-    // Hard guarantee: an answer never ships without clickable citations.
-    // If alignment found nothing to attach inline (heavily paraphrased
-    // output), list the consulted sources explicitly at the end.
-    if n_sources > 0 && !has_citation(&out) {
-        let list: String = (1..=n_sources.min(6)).map(|n| format!("[{n}]")).collect();
-        out = format!("{}\n\nSources consulted: {list}", out.trim_end());
-    }
-    out
-}
-
-fn has_citation(s: &str) -> bool {
-    let b = s.as_bytes();
-    let mut i = 0;
-    while let Some(open) = s[i..].find('[') {
-        let p = i + open + 1;
-        let mut j = p;
-        while j < b.len() && b[j].is_ascii_digit() {
-            j += 1;
+    // Drop trailing lines that are nothing but citation markers ("[1] [2]…")
+    // — citation spam some models emit at the end of an answer.
+    let mut s = out.trim_end().to_string();
+    while let Some(last) = s.lines().last() {
+        let residue: String = last.chars().filter(|c| !"[] 0123456789\t".contains(*c)).collect();
+        let only_cites = residue.is_empty() && last.contains('[');
+        if !only_cites {
+            break;
         }
-        if j > p && j < b.len() && b[j] == b']' {
-            return true;
-        }
-        i = p;
+        s.truncate(s.len() - last.len());
+        s = s.trim_end().to_string();
     }
-    false
+    s
 }
 
 fn cite_line(line: &str, n_sources: usize, passage_words: &[std::collections::HashSet<String>]) -> String {
@@ -191,7 +274,7 @@ fn cite_line(line: &str, n_sources: usize, passage_words: &[std::collections::Ha
     }
     // Require both an absolute and relative overlap so we don't stamp
     // citations on sentences the sources don't actually support.
-    if best.0 >= 3 && best.0 * 5 >= words.len() * 2 {
+    if best.0 >= 4 && best.0 * 2 >= words.len() {
         let trailing_ws: String =
             cleaned.chars().rev().take_while(|c| c.is_whitespace()).collect();
         let body = cleaned.trim_end();
@@ -223,7 +306,12 @@ impl Engine for StubEngine {
         "extractive (no model installed)".into()
     }
 
-    fn generate(&self, messages: &[ChatMessage], sink: TokenSink) -> Result<String> {
+    fn generate(
+        &self,
+        messages: &[ChatMessage],
+        sink: TokenSink,
+        _max_new_tokens: usize,
+    ) -> Result<String> {
         // Recover the numbered sources from the system message.
         let system = messages.first().map(|m| m.content.as_str()).unwrap_or("");
         let mut out = String::from(
@@ -325,16 +413,58 @@ mod tests {
     }
 
     #[test]
-    fn enforce_citations_never_ships_citation_free_answers() {
+    fn enforce_citations_leaves_unsupported_text_uncited() {
+        // An answer the sources don't support (e.g. an honest refusal) must
+        // NOT get citations stamped on it.
         let passages = vec![passage("T", "totally unrelated source text here")];
         let cited = enforce_citations(
-            "A heavily paraphrased answer sharing no vocabulary with sources at all.",
+            "Your library does not seem to cover skin conditions or rashes.",
             &passages,
         );
-        assert!(cited.contains("Sources consulted: [1]"), "{cited}");
-        // But an answer that already cites gets no appendix.
-        let cited2 = enforce_citations("A claim [1].", &passages);
-        assert!(!cited2.contains("Sources consulted"));
+        assert!(!cited.contains('['), "{cited}");
+    }
+
+    #[test]
+    fn enforce_citations_strips_trailing_citation_spam() {
+        let passages = vec![passage("T", "some text")];
+        let cited = enforce_citations("A real claim [1].\n\n[1] [1] [1]\n", &passages);
+        assert_eq!(cited.trim_end(), "A real claim [1].");
+    }
+
+    struct PlanEngine(&'static str);
+    impl Engine for PlanEngine {
+        fn name(&self) -> String {
+            "plan-test".into()
+        }
+        fn can_plan(&self) -> bool {
+            true
+        }
+        fn generate(&self, _m: &[ChatMessage], _s: TokenSink, _max: usize) -> Result<String> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    #[test]
+    fn plan_retrieval_uses_model_query_or_reuses() {
+        let history = vec![ChatMessage { role: "user".into(), content: "alpine wifi".into() }];
+        // Model rewrites the query…
+        let p = plan_retrieval(&PlanEngine("alpine linux wireless boot"), &history, "at boot?");
+        assert_eq!(p, RetrievalPlan::Search("alpine linux wireless boot".into()));
+        // …or decides no new retrieval is needed.
+        let p = plan_retrieval(&PlanEngine("NONE"), &history, "make it shorter");
+        assert_eq!(p, RetrievalPlan::ReusePrevious);
+        // First turn consults capable engines too (query rewriting), and
+        // NONE with no history degrades to searching the raw question.
+        let p = plan_retrieval(&PlanEngine("bee flight wing speed"), &[], "how do bees fly?");
+        assert_eq!(p, RetrievalPlan::Search("bee flight wing speed".into()));
+        let p = plan_retrieval(&PlanEngine("NONE"), &[], "how do bees fly?");
+        assert_eq!(p, RetrievalPlan::Search("how do bees fly?".into()));
+        // Engines that can't plan fall back to the keyword heuristic.
+        let p = plan_retrieval(&StubEngine, &history, "what about it at boot?");
+        match p {
+            RetrievalPlan::Search(q) => assert!(q.contains("alpine wifi"), "{q}"),
+            _ => panic!("expected search"),
+        }
     }
 
     #[test]
@@ -365,7 +495,7 @@ mod tests {
             streamed.push_str(s);
             true
         };
-        let full = StubEngine.generate(&msgs, &mut sink).unwrap();
+        let full = StubEngine.generate(&msgs, &mut sink, 1024).unwrap();
         assert_eq!(full, streamed);
         assert!(full.contains("[1]"));
     }

@@ -12,8 +12,7 @@ use serde::{Deserialize, Serialize};
 use zimlib::Zim;
 
 use crate::index::{
-    build_index, index_dir_for, merge_passages, query_from_question, IndexProgress, Passage,
-    SearchIndex, SharedProgress,
+    global_index_dir, query_from_question, GlobalIndex, IndexProgress, Passage, SharedProgress,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,7 +34,6 @@ struct Manifest {
 
 struct OpenBook {
     zim: Arc<Zim>,
-    search: Option<Arc<SearchIndex>>,
 }
 
 pub struct Library {
@@ -43,6 +41,7 @@ pub struct Library {
     manifest: RwLock<Manifest>,
     open: Mutex<HashMap<String, OpenBook>>,
     pub indexing: Mutex<HashMap<String, SharedProgress>>,
+    index: GlobalIndex,
 }
 
 impl Library {
@@ -51,18 +50,42 @@ impl Library {
         std::fs::create_dir_all(data_dir.join("models"))?;
         std::fs::create_dir_all(data_dir.join("books"))?;
         let manifest_path = data_dir.join("library.json");
-        let manifest = if manifest_path.exists() {
+        let mut manifest: Manifest = if manifest_path.exists() {
             serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)
                 .context("parsing library.json")?
         } else {
             Manifest::default()
         };
-        Ok(Arc::new(Library {
+        // Migration from the old one-index-per-book layout: if the global
+        // index doesn't exist yet, previously indexed books need reindexing
+        // (App::open kicks that off), and the orphaned per-book dirs go away.
+        let global_dir = global_index_dir(&data_dir);
+        let fresh_index = !global_dir.join("meta.json").exists();
+        if fresh_index {
+            for b in &mut manifest.books {
+                b.indexed = false;
+                b.chunks = 0;
+            }
+            if let Ok(rd) = std::fs::read_dir(data_dir.join("index")) {
+                for e in rd.filter_map(|e| e.ok()) {
+                    if e.path().is_dir() && e.file_name() != "global" {
+                        let _ = std::fs::remove_dir_all(e.path());
+                    }
+                }
+            }
+        }
+        let index = GlobalIndex::open_or_create(&global_dir)?;
+        let lib = Arc::new(Library {
             data_dir,
             manifest: RwLock::new(manifest),
             open: Mutex::new(HashMap::new()),
             indexing: Mutex::new(HashMap::new()),
-        }))
+            index,
+        });
+        if fresh_index {
+            lib.save()?;
+        }
+        Ok(lib)
     }
 
     fn save(&self) -> Result<()> {
@@ -96,23 +119,8 @@ impl Library {
         self.open
             .lock()
             .unwrap()
-            .insert(id.to_string(), OpenBook { zim: zim.clone(), search: None });
+            .insert(id.to_string(), OpenBook { zim: zim.clone() });
         Ok(zim)
-    }
-
-    fn search_index(&self, id: &str) -> Result<Arc<SearchIndex>> {
-        if let Some(ob) = self.open.lock().unwrap().get(id) {
-            if let Some(s) = &ob.search {
-                return Ok(s.clone());
-            }
-        }
-        let dir = index_dir_for(&self.data_dir, id);
-        let s = Arc::new(SearchIndex::open(&dir)?);
-        self.zim(id)?; // ensure OpenBook exists
-        if let Some(ob) = self.open.lock().unwrap().get_mut(id) {
-            ob.search = Some(s.clone());
-        }
-        Ok(s)
     }
 
     /// Add a ZIM file to the library and start indexing it in the background.
@@ -152,8 +160,7 @@ impl Library {
         std::thread::spawn(move || {
             let run = || -> Result<u64> {
                 let zim = lib.zim(&id)?;
-                let dir = index_dir_for(&lib.data_dir, &id);
-                build_index(&zim, &dir, &p)
+                lib.index.index_zim(&zim, &id, &p)
             };
             // A panic in the indexer must not leave the UI stuck on
             // "indexing…" forever.
@@ -169,10 +176,6 @@ impl Library {
                         }
                     }
                     let _ = lib.save();
-                    // Invalidate any cached (stale) search reader.
-                    if let Some(ob) = lib.open.lock().unwrap().get_mut(&id) {
-                        ob.search = None;
-                    }
                 }
                 Err(e) => {
                     eprintln!("indexing {id} failed: {e:#}");
@@ -191,7 +194,7 @@ impl Library {
         self.open.lock().unwrap().remove(id);
         self.manifest.write().unwrap().books.retain(|b| b.id != id);
         self.save()?;
-        let _ = std::fs::remove_dir_all(index_dir_for(&self.data_dir, id));
+        self.index.remove_zim(id)?;
         Ok(())
     }
 
@@ -228,16 +231,18 @@ impl Library {
     /// Retrieve the top passages for a question across all indexed books.
     pub fn retrieve(&self, question: &str, k: usize) -> Result<Vec<Passage>> {
         let query = query_from_question(question);
-        let mut lists = Vec::new();
-        for b in self.books().iter().filter(|b| b.indexed) {
-            match self.search_index(&b.id) {
-                Ok(s) => match s.search(&query, k, &b.id, &b.title) {
-                    Ok(hits) => lists.push(hits),
-                    Err(_) => continue,
-                },
-                Err(_) => continue,
-            }
-        }
-        Ok(merge_passages(lists, k))
+        let names: HashMap<String, String> =
+            self.books().into_iter().map(|b| (b.id, b.title)).collect();
+        self.index.search(&query, k, &names)
+    }
+
+    /// Books that claim a search index but don't have one (e.g. after the
+    /// index format changed) — App::open reindexes these at startup.
+    pub fn books_needing_index(&self) -> Vec<String> {
+        self.books()
+            .iter()
+            .filter(|b| !b.indexed && b.path.exists())
+            .map(|b| b.id.clone())
+            .collect()
     }
 }

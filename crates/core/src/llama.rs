@@ -34,7 +34,6 @@ pub struct LlamaEngine {
     model_path: PathBuf,
     lock: Mutex<()>,
     n_ctx: u32,
-    max_new_tokens: usize,
 }
 
 impl LlamaEngine {
@@ -51,7 +50,6 @@ impl LlamaEngine {
             model_path: model_path.to_path_buf(),
             lock: Mutex::new(()),
             n_ctx,
-            max_new_tokens: 1024,
         })
     }
 
@@ -76,7 +74,16 @@ impl Engine for LlamaEngine {
             .unwrap_or_else(|| "gguf model".into())
     }
 
-    fn generate(&self, messages: &[ChatMessage], sink: TokenSink) -> Result<String> {
+    fn can_plan(&self) -> bool {
+        true
+    }
+
+    fn generate(
+        &self,
+        messages: &[ChatMessage],
+        sink: TokenSink,
+        max_new_tokens: usize,
+    ) -> Result<String> {
         let _guard = self.lock.lock().unwrap();
         let prompt = self.render_prompt(messages)?;
 
@@ -91,7 +98,7 @@ impl Engine for LlamaEngine {
         let mut tokens = self.model.str_to_token(&prompt, AddBos::Always)?;
         // If the prompt is too large for the context window, drop whole
         // sources from the middle rather than truncating blindly at the end.
-        let budget = self.n_ctx as usize - self.max_new_tokens.min(self.n_ctx as usize / 4) - 8;
+        let budget = self.n_ctx as usize - max_new_tokens.min(self.n_ctx as usize / 4) - 8;
         if tokens.len() > budget {
             tokens.truncate(budget);
         }
@@ -124,7 +131,7 @@ impl Engine for LlamaEngine {
         let mut out = String::new();
         let mut n_cur = tokens.len();
         let mut decoder = encoding_rs::UTF_8.new_decoder();
-        for _ in 0..self.max_new_tokens {
+        for _ in 0..max_new_tokens {
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
             sampler.accept(token);
             if self.model.is_eog_token(token) {

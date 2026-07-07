@@ -521,6 +521,15 @@ async function ask(question) {
         const c = JSON.parse(data);
         currentChatId = c.id;
         refreshChats();
+      } else if (event === "plan") {
+        const p = JSON.parse(data);
+        const note = document.createElement("div");
+        note.className = "plan-note";
+        note.textContent = p.reused
+          ? "↩ continuing from the sources already on the table"
+          : `🔎 searched your library for: ${p.query}`;
+        chatEl.insertBefore(note, bubble.parentElement);
+        setThinking(bubble, "searching the library…");
       } else if (event === "sources") {
         sources = JSON.parse(data);
         renderSources(sources, bubble.parentElement);
