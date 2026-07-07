@@ -100,9 +100,22 @@ accurate citations". That points at lexical retrieval, not vectors:
   pronouns and follow-up context) or declares that no new retrieval is
   needed (pure refinements reuse the previous sources). Falls back to a
   keyword heuristic when no model is loaded.
+- **Source triage**: retrieved candidates are over-fetched (~10) and the
+  model judges each passage's relevance in isolation *before* answering —
+  small models are far better at "is this passage about X? yes/no" than at
+  ignoring junk mid-answer. Survivors become the numbered sources; if
+  nothing survives, the reply is a deterministic "not in your library"
+  message listing the near-misses as clickable cards — no generation, no
+  opportunity to hallucinate.
 - **Honest failure**: answers that end up with zero supported citations are
   prefixed with an explicit "nothing in your library supported this" notice
   instead of masquerading as grounded.
+- **Known ceiling (2B-class models)**: near-topic passages (a page *about*
+  first-aid kits for a burn-treatment question) can survive triage, and the
+  model may then blend its own knowledge with decorative citations. A
+  larger judge/answer model (OLMo 7B+) tightens this; the deeper fix is
+  hybrid retrieval with a small embedding model (the documented upgrade
+  path).
 - **Upgrade path:** `GlobalIndex` is the only retrieval seam; hybrid
   BM25+embedding reranking can be added later without touching anything else.
 

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 pub use chats::{Chat, ChatMeta, ChatStore, StoredMessage};
 pub use engine::{
     build_messages, contextual_question, enforce_citations, has_citations, plan_retrieval,
-    ChatMessage, Engine, RetrievalPlan, StubEngine,
+    triage_sources, ChatMessage, Engine, RetrievalPlan, StubEngine,
 };
 pub use index::Passage;
 pub use library::{BookMeta, Library};

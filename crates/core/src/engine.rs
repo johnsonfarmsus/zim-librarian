@@ -188,6 +188,67 @@ pub fn plan_retrieval(
     RetrievalPlan::Search(queries)
 }
 
+/// Triage retrieved candidates the way a librarian skims books before
+/// answering: the model judges each passage's relevance to the question in
+/// isolation (far more reliable for small models than asking them to ignore
+/// junk while writing the answer).
+///
+/// Returns `None` when triage isn't possible (no capable engine / call
+/// failed / unparseable) — caller should fall back to using all candidates.
+/// `Some(vec![])` means the model judged NOTHING relevant.
+pub fn triage_sources(
+    engine: &dyn Engine,
+    question: &str,
+    candidates: &[Passage],
+) -> Option<Vec<usize>> {
+    if !engine.can_plan() || candidates.is_empty() {
+        return None;
+    }
+    let mut list = String::new();
+    for (i, p) in candidates.iter().enumerate() {
+        let snippet: String = p.text.chars().take(300).collect();
+        list.push_str(&format!("[{}] \"{}\" ({}): {}\n\n", i + 1, p.title, p.book, snippet));
+    }
+    let system = "You are the triage step of a librarian. The user asked a question and a \
+        search of their offline library returned the candidate passages below. Keep ONLY \
+        passages that contain the actual information needed to answer — the facts, steps or \
+        explanations themselves. Be strict: a passage that merely mentions the topic, \
+        defines a related term, or is about tagging/cataloguing the topic does NOT count. \
+        Ask yourself: could the question be answered by quoting this passage? \
+        Reply with only the numbers of the useful passages, comma-separated (example: 2,5). \
+        If none qualify, reply NONE.";
+    let user = format!("Question: {question}\n\nCANDIDATE PASSAGES:\n{list}");
+    let msgs = vec![
+        ChatMessage { role: "system".into(), content: system.into() },
+        ChatMessage { role: "user".into(), content: user },
+    ];
+    let mut sink = |_: &str| true;
+    let out = engine.generate(&msgs, &mut sink, 32).ok()?;
+    let first = out.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    // Pull index numbers out of the reply, in order, deduped.
+    let mut keep: Vec<usize> = Vec::new();
+    let mut cur = String::new();
+    for c in first.chars().chain(std::iter::once(' ')) {
+        if c.is_ascii_digit() {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            if let Ok(n) = cur.parse::<usize>() {
+                if n >= 1 && n <= candidates.len() && !keep.contains(&(n - 1)) {
+                    keep.push(n - 1);
+                }
+            }
+            cur.clear();
+        }
+    }
+    if keep.is_empty() {
+        if first.to_ascii_lowercase().contains("none") {
+            return Some(Vec::new());
+        }
+        return None; // unparseable → caller falls back
+    }
+    Some(keep)
+}
+
 /// Whether the text contains at least one citation marker like `[3]`.
 pub fn has_citations(s: &str) -> bool {
     let b = s.as_bytes();
@@ -458,6 +519,25 @@ mod tests {
         fn generate(&self, _m: &[ChatMessage], _s: TokenSink, _max: usize) -> Result<String> {
             Ok(self.0.to_string())
         }
+    }
+
+    #[test]
+    fn triage_parses_numbers_none_and_garbage() {
+        let cands: Vec<Passage> = (0..6).map(|i| passage(&format!("T{i}"), "text")).collect();
+        assert_eq!(
+            triage_sources(&PlanEngine("2, 5"), "q", &cands),
+            Some(vec![1, 4])
+        );
+        assert_eq!(triage_sources(&PlanEngine("NONE"), "q", &cands), Some(vec![]));
+        // Out-of-range numbers are dropped; duplicates deduped.
+        assert_eq!(
+            triage_sources(&PlanEngine("1, 9, 1, 3"), "q", &cands),
+            Some(vec![0, 2])
+        );
+        // Unparseable output → None → caller falls back to all candidates.
+        assert_eq!(triage_sources(&PlanEngine("hard to say!"), "q", &cands), None);
+        // Engines that can't plan don't triage.
+        assert_eq!(triage_sources(&StubEngine, "q", &cands), None);
     }
 
     #[test]

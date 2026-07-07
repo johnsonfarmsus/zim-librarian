@@ -117,6 +117,9 @@ impl GlobalIndex {
             }
         }
         writer.commit()?;
+        // Make the commit visible to searches immediately (the default
+        // reload policy is delayed, which races tests and first queries).
+        self.reader.reload()?;
         progress.chunks.store(chunks_total, Ordering::Relaxed);
         progress.finished.store(true, Ordering::Relaxed);
         Ok(chunks_total)
@@ -127,6 +130,7 @@ impl GlobalIndex {
         let mut writer = self.writer.lock().unwrap();
         writer.delete_term(tantivy::Term::from_field_text(self.fields.zim, zim_id));
         writer.commit()?;
+        self.reader.reload()?;
         Ok(())
     }
 

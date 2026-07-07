@@ -506,13 +506,61 @@ async fn chat(
                 }
             }
             librarian_core::RetrievalPlan::Search(qs) => {
-                match app.library.retrieve_multi(qs, k) {
+                // Over-fetch candidates; the triage step below curates them.
+                match app.library.retrieve_multi(qs, (k * 2).max(10)) {
                     Ok(p) => (p, json!({ "query": qs.join("  |  ") })),
                     Err(e) => return err(e.to_string()),
                 }
             }
         };
         let _ = tx.send(Event::default().event("plan").data(plan_info.to_string()));
+
+        // Triage: the model reads each candidate and keeps only passages that
+        // actually address the question. If nothing survives, reply with a
+        // deterministic "not in your library" message — no generation, no
+        // opportunity to weave junk sources into fiction.
+        let reused = plan_info.get("reused").is_some();
+        let passages = if reused {
+            passages // previously curated
+        } else {
+            match librarian_core::triage_sources(engine.as_ref(), &question, &passages) {
+                None => passages.into_iter().take(k).collect(),
+                Some(keep) if keep.is_empty() => {
+                    let near: Vec<librarian_core::Passage> =
+                        passages.into_iter().take(3).collect();
+                    let mut msg = String::from(
+                        "I searched your library, but nothing in it actually covers this \
+                         question.",
+                    );
+                    if !near.is_empty() {
+                        msg.push_str("\n\nThe closest things I found were:\n");
+                        for (i, p) in near.iter().enumerate() {
+                            msg.push_str(&format!("- \"{}\" ({}) [{}]\n", p.title, p.book, i + 1));
+                        }
+                    }
+                    msg.push_str(
+                        "\nIf you'd like me to answer questions on this topic, add a ZIM \
+                         book that covers it (library.kiwix.org has free ones).",
+                    );
+                    let _ = tx.send(
+                        Event::default()
+                            .event("sources")
+                            .data(serde_json::to_string(&near).unwrap_or_else(|_| "[]".into())),
+                    );
+                    let _ = app.chats.append(
+                        &chat.id,
+                        librarian_core::StoredMessage {
+                            role: "assistant".into(),
+                            content: msg.clone(),
+                            sources: near,
+                        },
+                    );
+                    let _ = tx.send(Event::default().event("done").data(msg));
+                    return;
+                }
+                Some(keep) => keep.into_iter().take(k).map(|i| passages[i].clone()).collect(),
+            }
+        };
         let _ = tx.send(
             Event::default()
                 .event("sources")
