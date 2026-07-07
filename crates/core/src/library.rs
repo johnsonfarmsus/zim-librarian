@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use zimlib::Zim;
 
 use crate::index::{
-    global_index_dir, query_from_question, GlobalIndex, IndexProgress, Passage, SharedProgress,
+    global_index_dir, merge_passages, query_from_question, GlobalIndex, IndexProgress, Passage,
+    SharedProgress,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,10 +231,35 @@ impl Library {
 
     /// Retrieve the top passages for a question across all indexed books.
     pub fn retrieve(&self, question: &str, k: usize) -> Result<Vec<Passage>> {
-        let query = query_from_question(question);
+        self.retrieve_multi(std::slice::from_ref(&question.to_string()), k)
+    }
+
+    /// Retrieve using several alternative queries: each query's scores are
+    /// normalized by its own top hit (so vocabulary-lucky queries don't
+    /// dominate), a passage keeps its best normalized score across queries,
+    /// then the usual cap/floor/top-k merge applies.
+    pub fn retrieve_multi(&self, queries: &[String], k: usize) -> Result<Vec<Passage>> {
         let names: HashMap<String, String> =
             self.books().into_iter().map(|b| (b.id, b.title)).collect();
-        self.index.search(&query, k, &names)
+        let mut best: HashMap<(String, String, u64), Passage> = HashMap::new();
+        for q in queries {
+            let hits = self.index.search_raw(&query_from_question(q), k * 3, &names)?;
+            let top = hits.first().map(|h| h.score).unwrap_or(0.0);
+            if top <= 0.0 {
+                continue;
+            }
+            for mut h in hits {
+                h.score /= top;
+                let key = (h.zim_id.clone(), h.path.clone(), h.chunk);
+                match best.get(&key) {
+                    Some(prev) if prev.score >= h.score => {}
+                    _ => {
+                        best.insert(key, h);
+                    }
+                }
+            }
+        }
+        Ok(merge_passages(vec![best.into_values().collect()], k))
     }
 
     /// Books that claim a search index but don't have one (e.g. after the

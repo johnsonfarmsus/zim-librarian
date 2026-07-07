@@ -138,13 +138,22 @@ impl GlobalIndex {
         k: usize,
         book_names: &std::collections::HashMap<String, String>,
     ) -> Result<Vec<Passage>> {
+        Ok(merge_passages(vec![self.search_raw(query, k * 4, book_names)?], k))
+    }
+
+    /// Raw ranked hits without the cap/floor post-processing.
+    pub fn search_raw(
+        &self,
+        query: &str,
+        limit: usize,
+        book_names: &std::collections::HashMap<String, String>,
+    ) -> Result<Vec<Passage>> {
         let f = &self.fields;
         let mut parser = QueryParser::for_index(&self.index, vec![f.title, f.body]);
-        parser.set_field_boost(f.title, 2.0);
+        parser.set_field_boost(f.title, 1.4);
         let (q, _errors) = parser.parse_query_lenient(query);
         let searcher = self.reader.searcher();
-        // Over-fetch so the per-article cap still leaves k results.
-        let top = searcher.search(&q, &TopDocs::with_limit(k * 4))?;
+        let top = searcher.search(&q, &TopDocs::with_limit(limit.max(1)))?;
         let mut out = Vec::with_capacity(top.len());
         for (score, addr) in top {
             let doc: TantivyDocument = searcher.doc(addr)?;
@@ -166,7 +175,7 @@ impl GlobalIndex {
                 book,
             });
         }
-        Ok(merge_passages(vec![out], k))
+        Ok(out)
     }
 }
 

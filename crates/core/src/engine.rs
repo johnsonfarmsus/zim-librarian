@@ -118,8 +118,8 @@ pub fn contextual_question(history: &[ChatMessage], question: &str) -> String {
 /// it is capable, so the librarian uses conversational context intelligently.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RetrievalPlan {
-    /// Search the library with this (possibly rewritten) query.
-    Search(String),
+    /// Search the library with these alternative queries (results merged).
+    Search(Vec<String>),
     /// The message is a refinement (rephrase/shorten/continue…): answer from
     /// the conversation, reusing the previously retrieved sources.
     ReusePrevious,
@@ -134,42 +134,58 @@ pub fn plan_retrieval(
     question: &str,
 ) -> RetrievalPlan {
     if !engine.can_plan() {
-        return RetrievalPlan::Search(contextual_question(history, question));
+        return RetrievalPlan::Search(vec![contextual_question(history, question)]);
     }
-    let system = "You plan library searches for a librarian assistant. Read the conversation \
-        and the user's newest message, then reply with exactly ONE line:\n\
-        - a short keyword search query (3-10 words) that would find the information needed to \
-        answer the newest message: use the concrete terms a reference article on the topic \
-        would contain, and resolve any pronouns or references using the conversation; OR\n\
-        - the single word NONE if the newest message only asks to rephrase, shorten, expand, \
-        summarize or otherwise rework what was already discussed.\n\
-        Output only the query or NONE — no explanation, no quotes.";
-    let mut msgs = vec![ChatMessage { role: "system".into(), content: system.into() }];
+    let queries_part = "Reply with ONE to THREE search queries, one per line, each 3-8 \
+        keywords (not sentences). Imagine the how-to guides or encyclopedia articles that \
+        would answer the message, and write each query like such an article's title or key \
+        terms — standard technical names of the tools, protocols and concepts involved, not \
+        the user's casual phrasing. Make the lines different from each other (synonyms, \
+        alternative approaches), resolving pronouns and references from the conversation. \
+        Output only the queries — no explanations, no numbering, no quotes.";
+    let system = if history.is_empty() {
+        format!(
+            "You plan library searches for a librarian assistant. Read the user's message. \
+             {queries_part}"
+        )
+    } else {
+        format!(
+            "You plan library searches for a librarian assistant. Read the conversation and \
+             the user's newest message. {queries_part}\n\
+             Exception: reply with the single word NONE if the newest message only asks to \
+             rephrase, shorten, expand, summarize or otherwise rework the previous answer."
+        )
+    };
+    let mut msgs = vec![ChatMessage { role: "system".into(), content: system }];
     let tail = history.len().saturating_sub(6);
     msgs.extend(history[tail..].iter().cloned());
     msgs.push(ChatMessage { role: "user".into(), content: question.to_string() });
 
     let mut sink = |_: &str| true;
-    let out = match engine.generate(&msgs, &mut sink, 48) {
+    let out = match engine.generate(&msgs, &mut sink, 96) {
         Ok(o) => o,
-        Err(_) => return RetrievalPlan::Search(contextual_question(history, question)),
+        Err(_) => return RetrievalPlan::Search(vec![contextual_question(history, question)]),
     };
-    let line = out
+    let lines: Vec<String> = out
         .lines()
-        .map(|l| l.trim().trim_matches(['"', '`', '\'']).trim())
-        .find(|l| !l.is_empty())
-        .unwrap_or("")
-        .to_string();
-    if line.eq_ignore_ascii_case("none") {
+        .map(|l| l.trim().trim_matches(['"', '`', '\'', '-', '*']).trim().to_string())
+        .filter(|l| !l.is_empty() && l.chars().count() <= 120)
+        .take(3)
+        .collect();
+    if lines.first().map(|l| l.eq_ignore_ascii_case("none")).unwrap_or(false) {
         if history.is_empty() {
-            return RetrievalPlan::Search(question.to_string());
+            return RetrievalPlan::Search(vec![question.to_string()]);
         }
         return RetrievalPlan::ReusePrevious;
     }
-    if line.is_empty() || line.chars().count() > 120 {
-        return RetrievalPlan::Search(contextual_question(history, question));
+    if lines.is_empty() {
+        return RetrievalPlan::Search(vec![contextual_question(history, question)]);
     }
-    RetrievalPlan::Search(line)
+    // The user's own words stay in the mix: they often carry disambiguating
+    // context (like a book or product name) the rewrites drop.
+    let mut queries = lines;
+    queries.push(contextual_question(history, question));
+    RetrievalPlan::Search(queries)
 }
 
 /// Whether the text contains at least one citation marker like `[3]`.
@@ -449,20 +465,30 @@ mod tests {
         let history = vec![ChatMessage { role: "user".into(), content: "alpine wifi".into() }];
         // Model rewrites the query…
         let p = plan_retrieval(&PlanEngine("alpine linux wireless boot"), &history, "at boot?");
-        assert_eq!(p, RetrievalPlan::Search("alpine linux wireless boot".into()));
+        match p {
+            RetrievalPlan::Search(qs) => {
+                assert_eq!(qs[0], "alpine linux wireless boot");
+                // The original question (context-expanded) rides along.
+                assert!(qs.last().unwrap().contains("at boot"));
+            }
+            _ => panic!("expected search"),
+        }
         // …or decides no new retrieval is needed.
         let p = plan_retrieval(&PlanEngine("NONE"), &history, "make it shorter");
         assert_eq!(p, RetrievalPlan::ReusePrevious);
         // First turn consults capable engines too (query rewriting), and
         // NONE with no history degrades to searching the raw question.
         let p = plan_retrieval(&PlanEngine("bee flight wing speed"), &[], "how do bees fly?");
-        assert_eq!(p, RetrievalPlan::Search("bee flight wing speed".into()));
+        match p {
+            RetrievalPlan::Search(qs) => assert_eq!(qs[0], "bee flight wing speed"),
+            _ => panic!("expected search"),
+        }
         let p = plan_retrieval(&PlanEngine("NONE"), &[], "how do bees fly?");
-        assert_eq!(p, RetrievalPlan::Search("how do bees fly?".into()));
+        assert_eq!(p, RetrievalPlan::Search(vec!["how do bees fly?".into()]));
         // Engines that can't plan fall back to the keyword heuristic.
         let p = plan_retrieval(&StubEngine, &history, "what about it at boot?");
         match p {
-            RetrievalPlan::Search(q) => assert!(q.contains("alpine wifi"), "{q}"),
+            RetrievalPlan::Search(qs) => assert!(qs[0].contains("alpine wifi"), "{qs:?}"),
             _ => panic!("expected search"),
         }
     }

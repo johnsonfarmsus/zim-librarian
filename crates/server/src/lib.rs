@@ -505,10 +505,12 @@ async fn chat(
                     (prev, json!({ "reused": true }))
                 }
             }
-            librarian_core::RetrievalPlan::Search(q) => match app.library.retrieve(q, k) {
-                Ok(p) => (p, json!({ "query": q })),
-                Err(e) => return err(e.to_string()),
-            },
+            librarian_core::RetrievalPlan::Search(qs) => {
+                match app.library.retrieve_multi(qs, k) {
+                    Ok(p) => (p, json!({ "query": qs.join("  |  ") })),
+                    Err(e) => return err(e.to_string()),
+                }
+            }
         };
         let _ = tx.send(Event::default().event("plan").data(plan_info.to_string()));
         let _ = tx.send(
