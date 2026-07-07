@@ -52,7 +52,7 @@ async function refreshLibrary() {
     t.className = "t";
     t.textContent = b.title;
     t.title = "Browse this book";
-    if (!b.missing) t.onclick = () => readerOpen(`/home/${b.id}`, b.title);
+    if (!b.missing) t.onclick = () => readerOpen(`/home/${b.id}`, b.title, true);
     const d = document.createElement("div");
     d.className = "d";
     const label = document.createElement("span");
@@ -332,13 +332,17 @@ function setError(bubble, text) {
   bubble.appendChild(s);
 }
 
-function readerOpen(src, title) {
+function readerOpen(src, title, full = false) {
   $("reader-title").textContent = title || "Source";
   $("reader-frame").src = src;
-  $("reader").classList.remove("hidden");
+  const r = $("reader");
+  r.classList.toggle("full", full);
+  r.classList.remove("hidden");
 }
 $("reader-close").onclick = () => {
-  $("reader").classList.add("hidden");
+  const r = $("reader");
+  r.classList.add("hidden");
+  r.classList.remove("full");
   $("reader-frame").src = "about:blank";
 };
 
@@ -443,6 +447,21 @@ async function refreshChats() {
   for (const c of visible) {
     const item = document.createElement("div");
     item.className = "chat-item" + (c.id === currentChatId ? " active" : "");
+    const star = document.createElement("button");
+    star.className = "star" + (c.starred ? " on" : "");
+    star.textContent = c.starred ? "★" : "☆";
+    star.title = c.starred
+      ? "Unstar (old chats auto-delete past 15)"
+      : "Star: pin to top and never auto-delete";
+    star.onclick = async (e) => {
+      e.stopPropagation();
+      await fetch(`/api/chats/${c.id}/star`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ starred: !c.starred }),
+      });
+      refreshChats();
+    };
     const t = document.createElement("span");
     t.className = "title";
     t.textContent = c.title;
@@ -458,7 +477,7 @@ async function refreshChats() {
       if (c.id === currentChatId) startNewChat();
       else refreshChats();
     };
-    item.append(t, del);
+    item.append(star, t, del);
     item.onclick = () => loadChat(c.id);
     el.appendChild(item);
   }

@@ -26,6 +26,9 @@ pub struct Chat {
     pub title: String,
     pub created_ms: u64,
     pub updated_ms: u64,
+    /// Starred chats pin to the top and are exempt from auto-pruning.
+    #[serde(default)]
+    pub starred: bool,
     pub messages: Vec<StoredMessage>,
 }
 
@@ -35,7 +38,11 @@ pub struct ChatMeta {
     pub title: String,
     pub updated_ms: u64,
     pub messages: usize,
+    pub starred: bool,
 }
+
+/// Auto-prune threshold: newest unstarred chats beyond this total go away.
+pub const MAX_CHATS: usize = 15;
 
 pub struct ChatStore {
     dir: PathBuf,
@@ -79,6 +86,7 @@ impl ChatStore {
             title: clip_title(title),
             created_ms: now,
             updated_ms: now,
+            starred: false,
             messages: Vec::new(),
         };
         self.write(&chat)?;
@@ -118,13 +126,38 @@ impl ChatStore {
                             title: c.title,
                             updated_ms: c.updated_ms,
                             messages: c.messages.len(),
+                            starred: c.starred,
                         });
                     }
                 }
             }
         }
-        out.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+        // Starred chats pin to the top; both groups newest-first.
+        out.sort_by(|a, b| b.starred.cmp(&a.starred).then(b.updated_ms.cmp(&a.updated_ms)));
         out
+    }
+
+    pub fn set_starred(&self, id: &str, starred: bool) -> Result<Chat> {
+        let _guard = self.lock.lock().unwrap();
+        let mut chat = self.get(id)?;
+        chat.starred = starred;
+        self.write(&chat)?;
+        Ok(chat)
+    }
+
+    /// Keep at most `max_total` chats: starred chats always survive; the
+    /// oldest unstarred chats beyond the limit are deleted.
+    pub fn prune(&self, max_total: usize) -> usize {
+        let metas = self.list();
+        let starred = metas.iter().filter(|m| m.starred).count();
+        let allowed_unstarred = max_total.saturating_sub(starred);
+        let mut deleted = 0;
+        for m in metas.iter().filter(|m| !m.starred).skip(allowed_unstarred) {
+            if self.delete(&m.id).is_ok() {
+                deleted += 1;
+            }
+        }
+        deleted
     }
 
     /// Append a message; sets the chat title from the first user message.
@@ -137,6 +170,8 @@ impl ChatStore {
         chat.messages.push(msg);
         chat.updated_ms = now_ms();
         self.write(&chat)?;
+        drop(_guard);
+        self.prune(MAX_CHATS);
         Ok(chat)
     }
 }
@@ -197,6 +232,39 @@ mod tests {
 
         store.delete(&chat.id).unwrap();
         assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn starring_pins_protects_and_prune_caps_total() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ChatStore::open(tmp.path()).unwrap();
+        // Star the first (oldest) chat, then flood the store: appends
+        // auto-prune, and the starred chat must survive.
+        let first = store.create("").unwrap();
+        store
+            .append(&first.id, StoredMessage {
+                role: "user".into(),
+                content: "keep me".into(),
+                sources: vec![],
+            })
+            .unwrap();
+        store.set_starred(&first.id, true).unwrap();
+        for i in 0..20 {
+            let c = store.create("").unwrap();
+            store
+                .append(&c.id, StoredMessage {
+                    role: "user".into(),
+                    content: format!("question {i}"),
+                    sources: vec![],
+                })
+                .unwrap();
+        }
+        let metas = store.list();
+        assert!(metas.len() <= MAX_CHATS, "{} chats left", metas.len());
+        assert_eq!(metas[0].id, first.id, "starred chat not pinned to top");
+        assert!(metas[0].starred);
+        // Unstarred remainder is newest-first.
+        assert!(metas[1].updated_ms >= metas[2].updated_ms);
     }
 
     #[test]

@@ -81,6 +81,13 @@ body {
 .chat-item .del { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; visibility: hidden; }
 .chat-item:hover .del { visibility: visible; }
 .chat-item .del:hover { color: #c0392b; }
+.chat-item .star {
+  background: none; border: none; cursor: pointer;
+  font-size: 13px; padding: 0 2px; color: var(--muted); visibility: hidden;
+}
+.chat-item:hover .star { visibility: visible; }
+.chat-item .star.on { visibility: visible; color: #e6b422; }
+.chat-item .star:hover { color: #e6b422; }
 .hint { font-size: 12px; color: var(--muted); }
 .hint input { width: 100%; margin: 6px 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font-size: 12px; }
 .hidden { display: none !important; }
@@ -234,6 +241,10 @@ a.cite:hover { filter: brightness(1.15); }
   background: var(--panel); border-left: 1px solid var(--line);
   display: flex; flex-direction: column; z-index: 50;
 }
+/* Library browsing: reader takes the whole area right of the sidebar; the
+   chat stays alive underneath and returns on close. */
+#reader.full { flex: 1; }
+#app:has(#reader.full:not(.hidden)) #main { display: none; }
 #reader-bar {
   display: flex; justify-content: space-between; align-items: center;
   padding: 10px 14px; border-bottom: 1px solid var(--line);

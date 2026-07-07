@@ -39,6 +39,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/models/download", post(model_download))
         .route("/api/chats", get(list_chats).post(new_chat))
         .route("/api/chats/:id", get(get_chat).delete(delete_chat))
+        .route("/api/chats/:id/star", post(star_chat))
         .route("/api/chat", post(chat))
         .route("/content/:zim/*path", get(content))
         .route("/home/:zim", get(book_home))
@@ -441,6 +442,22 @@ async fn new_chat(State(app): State<Shared>) -> Response {
 async fn get_chat(State(app): State<Shared>, AxPath(id): AxPath<String>) -> Response {
     match app.chats.get(&id) {
         Ok(c) => Json(json!({ "chat": c })).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct StarReq {
+    starred: bool,
+}
+
+async fn star_chat(
+    State(app): State<Shared>,
+    AxPath(id): AxPath<String>,
+    Json(req): Json<StarReq>,
+) -> Response {
+    match app.chats.set_starred(&id, req.starred) {
+        Ok(c) => Json(json!({ "starred": c.starred })).into_response(),
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
 }
