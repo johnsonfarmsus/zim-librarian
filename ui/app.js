@@ -51,6 +51,8 @@ async function refreshLibrary() {
     const t = document.createElement("div");
     t.className = "t";
     t.textContent = b.title;
+    t.title = "Browse this book";
+    if (!b.missing) t.onclick = () => readerOpen(`/home/${b.id}`, b.title);
     const d = document.createElement("div");
     d.className = "d";
     const label = document.createElement("span");

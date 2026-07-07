@@ -33,6 +33,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/library/:id", delete(remove_book))
         .route("/api/fs", get(fs_list))
         .route("/api/status", get(status))
+        .route("/api/search", get(search_debug))
         .route("/api/models", get(models).post(select_model))
         .route("/api/models/catalog", get(model_catalog))
         .route("/api/models/download", post(model_download))
@@ -40,6 +41,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/chats/:id", get(get_chat).delete(delete_chat))
         .route("/api/chat", post(chat))
         .route("/content/:zim/*path", get(content))
+        .route("/home/:zim", get(book_home))
         .fallback(static_asset)
         .with_state(app)
 }
@@ -213,6 +215,22 @@ async fn status(State(app): State<Shared>) -> Json<Value> {
     }))
 }
 
+/// Raw retrieval, for debugging what the index returns for a query.
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+}
+
+async fn search_debug(State(app): State<Shared>, Query(sq): Query<SearchQuery>) -> Response {
+    let lib = app.library.clone();
+    let res = tokio::task::spawn_blocking(move || lib.retrieve(&sq.q, 8)).await;
+    match res {
+        Ok(Ok(hits)) => Json(json!({ "hits": hits })).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "task failed").into_response(),
+    }
+}
+
 // ---------- models ----------
 
 async fn models(State(app): State<Shared>) -> Json<Value> {
@@ -258,12 +276,20 @@ struct CatalogEntry {
 
 const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
+        id: "gemma-4-e2b",
+        label: "Gemma 4 E2B (recommended)",
+        file: "gemma-4-E2B-it-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
+        bytes: 3_106_736_256,
+        notes: "Latest on-device Gemma; best quality tested. Needs ~4 GB free RAM.",
+    },
+    CatalogEntry {
         id: "gemma-3n-e2b",
-        label: "Gemma 3n E2B (recommended)",
+        label: "Gemma 3n E2B",
         file: "gemma-3n-E2B-it-Q4_K_M.gguf",
         url: "https://huggingface.co/unsloth/gemma-3n-E2B-it-GGUF/resolve/main/gemma-3n-E2B-it-Q4_K_M.gguf",
         bytes: 3_026_881_888,
-        notes: "Best answer/citation quality tested; designed for on-device use. Needs ~4 GB free RAM.",
+        notes: "Previous-generation on-device Gemma. Needs ~4 GB free RAM.",
     },
     CatalogEntry {
         id: "olmo-2-1b",
@@ -678,6 +704,26 @@ async fn content(
             (StatusCode::NOT_FOUND, "no such article").into_response()
         }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "task failed").into_response(),
+    }
+}
+
+/// Open a book for browsing: redirect to its main page.
+async fn book_home(State(app): State<Shared>, AxPath(zim_id): AxPath<String>) -> Response {
+    let lib = app.library.clone();
+    let zid = zim_id.clone();
+    let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
+        let zim = lib.zim(&zid)?;
+        Ok(zim.main_page().map(|e| e.path))
+    })
+    .await;
+    match res {
+        Ok(Ok(Some(path))) => {
+            let path = path.split('/').map(urlencode).collect::<Vec<_>>().join("/");
+            Redirect::temporary(&format!("/content/{zim_id}/{path}")).into_response()
+        }
+        Ok(Ok(None)) => (StatusCode::NOT_FOUND, "this book has no main page").into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "task failed").into_response(),
     }
 }

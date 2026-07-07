@@ -166,6 +166,7 @@ pub fn plan_retrieval(
         Ok(o) => o,
         Err(_) => return RetrievalPlan::Search(vec![contextual_question(history, question)]),
     };
+    eprintln!("[planner] {out:?}");
     let lines: Vec<String> = out
         .lines()
         .map(|l| l.trim().trim_matches(['"', '`', '\'', '-', '*']).trim().to_string())
@@ -209,14 +210,15 @@ pub fn triage_sources(
         let snippet: String = p.text.chars().take(300).collect();
         list.push_str(&format!("[{}] \"{}\" ({}): {}\n\n", i + 1, p.title, p.book, snippet));
     }
-    let system = "You are the triage step of a librarian. The user asked a question and a \
-        search of their offline library returned the candidate passages below. Keep ONLY \
-        passages that contain the actual information needed to answer — the facts, steps or \
-        explanations themselves. Be strict: a passage that merely mentions the topic, \
-        defines a related term, or is about tagging/cataloguing the topic does NOT count. \
-        Ask yourself: could the question be answered by quoting this passage? \
-        Reply with only the numbers of the useful passages, comma-separated (example: 2,5). \
-        If none qualify, reply NONE.";
+    let system = "You are the triage step of a librarian's search system. This is a \
+        reference-lookup task: you are only selecting which library passages to hand over \
+        for answering — you are not answering or giving advice yourself. \
+        Keep EVERY passage that contains information that helps answer the question — the \
+        facts, steps or explanations themselves. Discard passages that merely mention \
+        similar words, define a related term, or are about tagging/cataloguing the topic. \
+        Test: could part of the answer be quoted from this passage? \
+        Reply with only the numbers of the passages to keep, comma-separated (example: \
+        1,2,5). If none qualify, reply NONE.";
     let user = format!("Question: {question}\n\nCANDIDATE PASSAGES:\n{list}");
     let msgs = vec![
         ChatMessage { role: "system".into(), content: system.into() },
@@ -224,6 +226,10 @@ pub fn triage_sources(
     ];
     let mut sink = |_: &str| true;
     let out = engine.generate(&msgs, &mut sink, 32).ok()?;
+    eprintln!(
+        "[triage] cands={:?} -> {out:?}",
+        candidates.iter().map(|p| p.title.as_str()).collect::<Vec<_>>()
+    );
     let first = out.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
     // Pull index numbers out of the reply, in order, deduped.
     let mut keep: Vec<usize> = Vec::new();

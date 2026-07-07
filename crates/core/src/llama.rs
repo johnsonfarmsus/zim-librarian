@@ -58,11 +58,56 @@ impl LlamaEngine {
             .iter()
             .map(|m| LlamaChatMessage::new(m.role.clone(), m.content.clone()))
             .collect::<Result<_, _>>()?;
-        let tmpl = self
-            .model
-            .chat_template(None)
-            .context("model has no chat template")?;
-        Ok(self.model.apply_chat_template(&tmpl, &chat, true)?)
+        // Some models ship Jinja templates too complex for llama.cpp's
+        // template engine (Gemma 4 uses macros); fall back to rendering the
+        // conversation manually in the model family's native format.
+        if let Ok(tmpl) = self.model.chat_template(None) {
+            if let Ok(p) = self.model.apply_chat_template(&tmpl, &chat, true) {
+                return Ok(p);
+            }
+        }
+        Ok(self.render_manual(messages))
+    }
+
+    fn render_manual(&self, messages: &[ChatMessage]) -> String {
+        let gemma = self
+            .model_path
+            .file_name()
+            .map(|f| f.to_string_lossy().to_lowercase().contains("gemma"))
+            .unwrap_or(false);
+        let mut out = String::new();
+        if gemma {
+            // Gemma has no system role: fold it into the first user turn.
+            let mut pending_system = String::new();
+            for m in messages {
+                match m.role.as_str() {
+                    "system" => pending_system = m.content.clone(),
+                    "assistant" => {
+                        out.push_str("<start_of_turn>model\n");
+                        out.push_str(&m.content);
+                        out.push_str("<end_of_turn>\n");
+                    }
+                    _ => {
+                        out.push_str("<start_of_turn>user\n");
+                        if !pending_system.is_empty() {
+                            out.push_str(&pending_system);
+                            out.push_str("\n\n");
+                            pending_system.clear();
+                        }
+                        out.push_str(&m.content);
+                        out.push_str("<end_of_turn>\n");
+                    }
+                }
+            }
+            out.push_str("<start_of_turn>model\n");
+        } else {
+            // ChatML: the most widely understood generic format.
+            for m in messages {
+                out.push_str(&format!("<|im_start|>{}\n{}<|im_end|>\n", m.role, m.content));
+            }
+            out.push_str("<|im_start|>assistant\n");
+        }
+        out
     }
 }
 

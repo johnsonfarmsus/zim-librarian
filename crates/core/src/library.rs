@@ -26,6 +26,9 @@ pub struct BookMeta {
     pub entry_count: u32,
     pub indexed: bool,
     pub chunks: u64,
+    /// Indexing pipeline version this book was last indexed with.
+    #[serde(default)]
+    pub index_version: u32,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -73,6 +76,13 @@ impl Library {
                         let _ = std::fs::remove_dir_all(e.path());
                     }
                 }
+            }
+        }
+        // Books indexed by an older pipeline (e.g. before PDF support) get
+        // reindexed at startup.
+        for b in &mut manifest.books {
+            if b.indexed && b.index_version < GlobalIndex::PIPELINE_VERSION {
+                b.indexed = false;
             }
         }
         let index = GlobalIndex::open_or_create(&global_dir)?;
@@ -142,6 +152,7 @@ impl Library {
             entry_count: zim.entry_count(),
             indexed: false,
             chunks: 0,
+            index_version: 0,
         };
         self.manifest.write().unwrap().books.push(meta.clone());
         self.save()?;
@@ -174,6 +185,7 @@ impl Library {
                         if let Some(b) = m.books.iter_mut().find(|b| b.id == id) {
                             b.indexed = true;
                             b.chunks = chunks;
+                            b.index_version = GlobalIndex::PIPELINE_VERSION;
                         }
                     }
                     let _ = lib.save();

@@ -82,7 +82,8 @@ port; `ZIM_LIBRARIAN_NO_BROWSER=1` suppresses browser launch.
 
 | hardware | model | size | notes |
 |---|---|---|---|
-| **default: 8 GB+ laptops, tablets, recent phones** | Gemma 3n E2B-it Q4_K_M | ~2.8 GB | best grounding/citation quality tested; designed for on-device |
+| **default: 8 GB+ laptops, tablets, recent phones** | Gemma 4 E2B-it Q4_K_M | ~2.9 GB | latest on-device Gemma; best grounding/citation quality tested |
+| previous generation | Gemma 3n E2B-it Q4_K_M | ~2.8 GB | fine fallback if Gemma 4 is unsupported by the bundled llama.cpp |
 | full transparency (open data + code) | OLMo-2-0425-1B-Instruct Q4_K_M | ~0.9 GB | fully open; decent but occasionally imports outside knowledge |
 | stronger open option, 16 GB+ | OLMo-2-1124-7B-Instruct Q4_K_M | ~4.5 GB | |
 | very old machines / minimal | SmolLM2-360M-Instruct Q8 | ~0.4 GB | relies on the citation-alignment pass; treat as search + summaries |

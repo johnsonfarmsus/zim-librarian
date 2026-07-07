@@ -95,17 +95,31 @@ impl GlobalIndex {
             }
             progress.done_entries.store(i as u64 + 1, Ordering::Relaxed);
             let Ok(entry) = zim.entry_at(i) else { continue };
-            if entry.namespace != article_ns || !entry.is_html() {
+            let is_pdf = entry.mime.as_deref() == Some("application/pdf");
+            if entry.namespace != article_ns || !(entry.is_html() || is_pdf) {
                 continue;
             }
             let EntryKind::Content { .. } = entry.kind else { continue };
             let Ok(bytes) = zim.content(&entry) else { continue };
-            let html = String::from_utf8_lossy(&bytes);
-            let extracted = html_to_text(&html);
-            let title = extracted.title.unwrap_or_else(|| entry.title.clone());
-            for (ci, chunk) in
-                chunk_text(&extracted.text, CHUNK_TARGET_CHARS).into_iter().enumerate()
-            {
+            let (title, text) = if is_pdf {
+                // Some ZIMs (e.g. the "zimgit" collections) are bundles of
+                // PDF documents rather than HTML articles.
+                let Some(text) = pdf_to_text(&bytes) else { continue };
+                let name = entry
+                    .title
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&entry.title)
+                    .trim_end_matches(".pdf")
+                    .trim()
+                    .to_string();
+                (name, text)
+            } else {
+                let html = String::from_utf8_lossy(&bytes);
+                let e = html_to_text(&html);
+                (e.title.unwrap_or_else(|| entry.title.clone()), e.text)
+            };
+            for (ci, chunk) in chunk_text(&text, CHUNK_TARGET_CHARS).into_iter().enumerate() {
                 let mut doc = TantivyDocument::default();
                 doc.add_text(f.zim, zim_id);
                 doc.add_text(f.path, &entry.path);
@@ -124,6 +138,10 @@ impl GlobalIndex {
         progress.finished.store(true, Ordering::Relaxed);
         Ok(chunks_total)
     }
+
+    /// Version of the indexing pipeline; bump when indexing gains new
+    /// capabilities (so existing books get reindexed on upgrade).
+    pub const PIPELINE_VERSION: u32 = 3; // v3: clean PDF titles
 
     /// Remove every chunk belonging to a book.
     pub fn remove_zim(&self, zim_id: &str) -> Result<()> {
@@ -181,6 +199,31 @@ impl GlobalIndex {
         }
         Ok(out)
     }
+}
+
+/// Extract plain text from a PDF. Returns None when the PDF has no usable
+/// text layer (scanned images) or the parser chokes — PDF parsing is wild
+/// territory, so panics are contained here.
+fn pdf_to_text(bytes: &[u8]) -> Option<String> {
+    let result = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(bytes));
+    let text = result.ok()?.ok()?;
+    // Collapse the frequently-broken line layout into paragraphs: blank
+    // lines separate paragraphs, single newlines are soft wraps.
+    let mut out = String::with_capacity(text.len());
+    let mut blank = 0;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            blank += 1;
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(if blank > 0 { '\n' } else { ' ' });
+        }
+        out.push_str(l);
+        blank = 0;
+    }
+    (out.len() > 100).then_some(out)
 }
 
 /// A single retrieved passage.
