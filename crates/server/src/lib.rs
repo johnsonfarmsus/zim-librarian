@@ -37,6 +37,10 @@ pub fn router(app: Shared) -> Router {
         .route("/api/models", get(models).post(select_model))
         .route("/api/models/catalog", get(model_catalog))
         .route("/api/models/download", post(model_download))
+        .route("/api/models/download-url", post(model_download_url))
+        .route("/api/models/downloads", get(url_download_status))
+        .route("/api/zims/catalog", get(zim_catalog))
+        .route("/api/zims/download", post(zim_download))
         .route("/api/chats", get(list_chats).post(new_chat))
         .route("/api/chats/:id", get(get_chat).delete(delete_chat))
         .route("/api/chats/:id/star", post(star_chat))
@@ -109,6 +113,9 @@ async fn scan_books(State(app): State<Shared>) -> Json<Value> {
 #[derive(Deserialize)]
 struct FsQuery {
     path: Option<String>,
+    /// Comma-separated extensions to list (default "zim"). The model picker
+    /// passes "gguf".
+    exts: Option<String>,
 }
 
 async fn fs_list(State(app): State<Shared>, Query(q): Query<FsQuery>) -> Response {
@@ -121,6 +128,13 @@ async fn fs_list(State(app): State<Shared>, Query(q): Query<FsQuery>) -> Respons
     if !path.is_dir() {
         return (StatusCode::BAD_REQUEST, "not a directory").into_response();
     }
+    let exts: Vec<String> = q
+        .exts
+        .unwrap_or_else(|| "zim".into())
+        .split(',')
+        .map(|e| e.trim().to_ascii_lowercase())
+        .filter(|e| !e.is_empty())
+        .collect();
     let mut dirs_out: Vec<String> = Vec::new();
     let mut files_out: Vec<Value> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&path) {
@@ -134,7 +148,7 @@ async fn fs_list(State(app): State<Shared>, Query(q): Query<FsQuery>) -> Respons
                 dirs_out.push(name);
             } else if p
                 .extension()
-                .map(|x| x.eq_ignore_ascii_case("zim"))
+                .map(|x| exts.iter().any(|w| x.eq_ignore_ascii_case(w)))
                 .unwrap_or(false)
             {
                 let size = e.metadata().map(|m| m.len()).unwrap_or(0);
@@ -150,10 +164,17 @@ async fn fs_list(State(app): State<Shared>, Query(q): Query<FsQuery>) -> Respons
     if downloads.is_dir() {
         quick.push(json!({ "label": "Downloads", "path": downloads.to_string_lossy() }));
     }
-    quick.push(json!({
-        "label": "Books folder",
-        "path": app.library.books_dir().to_string_lossy()
-    }));
+    if exts.iter().any(|e| e == "gguf") {
+        quick.push(json!({
+            "label": "Models folder",
+            "path": app.models_dir().to_string_lossy()
+        }));
+    } else {
+        quick.push(json!({
+            "label": "Books folder",
+            "path": app.library.books_dir().to_string_lossy()
+        }));
+    }
     #[cfg(target_os = "macos")]
     if std::path::Path::new("/Volumes").is_dir() {
         quick.push(json!({ "label": "External drives", "path": "/Volumes" }));
@@ -294,19 +315,19 @@ const CATALOG: &[CatalogEntry] = &[
     },
     CatalogEntry {
         id: "olmo-2-1b",
-        label: "OLMo 2 1B (fully open)",
+        label: "OLMo 2 1B (default, fully open)",
         file: "OLMo-2-0425-1B-Instruct-Q4_K_M.gguf",
         url: "https://huggingface.co/allenai/OLMo-2-0425-1B-Instruct-GGUF/resolve/main/OLMo-2-0425-1B-Instruct-Q4_K_M.gguf",
         bytes: 935_515_296,
-        notes: "Open weights, data and training code. Good on 8 GB machines.",
+        notes: "Ships with the desktop app. Open weights, data and training code; runs on 8 GB machines and phones.",
     },
     CatalogEntry {
-        id: "olmo-2-7b",
-        label: "OLMo 2 7B (fully open, larger)",
-        file: "olmo-2-1124-7B-instruct-Q4_K_M.gguf",
-        url: "https://huggingface.co/allenai/OLMo-2-1124-7B-Instruct-GGUF/resolve/main/olmo-2-1124-7B-instruct-Q4_K_M.gguf",
-        bytes: 4_472_020_256,
-        notes: "Strongest open option; best on 16 GB+ machines.",
+        id: "olmo-3-7b",
+        label: "OLMo 3 7B (fully open, larger)",
+        file: "allenai_Olmo-3-7B-Instruct-Q4_K_M.gguf",
+        url: "https://huggingface.co/bartowski/allenai_Olmo-3-7B-Instruct-GGUF/resolve/main/allenai_Olmo-3-7B-Instruct-Q4_K_M.gguf",
+        bytes: 4_471_601_792,
+        notes: "Strongest fully-open option; best on 16 GB+ machines.",
     },
     CatalogEntry {
         id: "smollm2-360m",
@@ -371,22 +392,108 @@ async fn model_download(State(app): State<Shared>, Json(req): Json<DownloadReq>)
     }
     let dest = app.models_dir().join(entry.file);
     let (id, url) = (entry.id.to_string(), entry.url.to_string());
+    let file = entry.file.to_string();
     tokio::task::spawn_blocking(move || {
         let result = download_file(&url, &dest, &id);
-        let mut dls = DOWNLOADS.lock().unwrap();
-        match result {
-            Ok(()) => {
-                dls.remove(&id);
-            }
-            Err(e) => {
-                if let Some(p) = dls.get_mut(&id) {
-                    p.error = Some(e.to_string());
+        let ok = result.is_ok();
+        {
+            let mut dls = DOWNLOADS.lock().unwrap();
+            match result {
+                Ok(()) => {
+                    dls.remove(&id);
                 }
-                let _ = std::fs::remove_file(dest.with_extension("part"));
+                Err(e) => {
+                    if let Some(p) = dls.get_mut(&id) {
+                        p.error = Some(e.to_string());
+                    }
+                    let _ = std::fs::remove_file(dest.with_extension("part"));
+                }
             }
+        }
+        // First model on a fresh install: select it so chat just works.
+        if ok && app.settings.read().unwrap().model.is_none() {
+            app.settings.write().unwrap().model = Some(file);
+            let _ = app.save_settings();
+            app.reload_engine();
         }
     });
     Json(json!({ "ok": true })).into_response()
+}
+
+/// Download any direct GGUF URL into the models folder ("Add from URL").
+#[derive(Deserialize)]
+struct UrlDownloadReq {
+    url: String,
+}
+
+async fn model_download_url(State(app): State<Shared>, Json(req): Json<UrlDownloadReq>) -> Response {
+    let url = req.url.trim().to_string();
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return (StatusCode::BAD_REQUEST, "not an http(s) URL").into_response();
+    }
+    let base = url
+        .split('/')
+        .next_back()
+        .unwrap_or("")
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_string();
+    if !base.to_ascii_lowercase().ends_with(".gguf") || base.len() < 6 {
+        return (StatusCode::BAD_REQUEST, "URL must point to a .gguf file").into_response();
+    }
+    let id = format!("url-{base}");
+    {
+        let mut dls = DOWNLOADS.lock().unwrap();
+        if dls.get(&id).map(|p| p.error.is_none()).unwrap_or(false) {
+            return Json(json!({ "ok": true, "id": id })).into_response();
+        }
+        dls.insert(id.clone(), DlProgress::default());
+    }
+    let dest = app.models_dir().join(&base);
+    let dl_id = id.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = download_file(&url, &dest, &dl_id);
+        let ok = result.is_ok();
+        {
+            let mut dls = DOWNLOADS.lock().unwrap();
+            match result {
+                Ok(()) => {
+                    dls.remove(&dl_id);
+                }
+                Err(e) => {
+                    if let Some(p) = dls.get_mut(&dl_id) {
+                        p.error = Some(e.to_string());
+                    }
+                    let _ = std::fs::remove_file(dest.with_extension("part"));
+                }
+            }
+        }
+        if ok && app.settings.read().unwrap().model.is_none() {
+            app.settings.write().unwrap().model = Some(base);
+            let _ = app.save_settings();
+            app.reload_engine();
+        }
+    });
+    Json(json!({ "ok": true, "id": id })).into_response()
+}
+
+/// Progress of ad-hoc URL downloads (the catalog reports its own).
+async fn url_download_status() -> Json<Value> {
+    let dls = DOWNLOADS.lock().unwrap();
+    let entries: Vec<Value> = dls
+        .iter()
+        .filter(|(k, _)| k.starts_with("url-"))
+        .map(|(k, p)| {
+            json!({
+                "id": k,
+                "done": p.done,
+                "total": p.total,
+                "error": p.error,
+            })
+        })
+        .collect();
+    Json(json!({ "downloads": entries }))
 }
 
 fn download_file(url: &str, dest: &std::path::Path, id: &str) -> anyhow::Result<()> {
@@ -424,6 +531,192 @@ fn download_file(url: &str, dest: &std::path::Path, id: &str) -> anyhow::Result<
     }
     std::fs::rename(&tmp, dest)?;
     Ok(())
+}
+
+// ---------- starter-library (ZIM) catalog & downloads ----------
+//
+// Same rules as the model catalog: strictly user-initiated network access.
+// Kiwix serves only dated files (no "latest" permalinks), so the current
+// edition is resolved through their OPDS catalog at download time, with a
+// pinned dated URL as fallback.
+
+struct ZimCatalogEntry {
+    id: &'static str,
+    label: &'static str,
+    /// OPDS book name (filename minus flavour and date).
+    name: &'static str,
+    /// OPDS flavour to match: "maxi" (with images), "nopic", "mini".
+    flavour: &'static str,
+    fallback_url: &'static str,
+    /// Approximate size, replaced by the resolved edition's exact size.
+    bytes: u64,
+    notes: &'static str,
+}
+
+const ZIM_CATALOG: &[ZimCatalogEntry] = &[
+    ZimCatalogEntry {
+        id: "wikipedia-best",
+        label: "Wikipedia (best-articles selection)",
+        name: "wikipedia_en_wp1-0.8",
+        flavour: "nopic",
+        fallback_url: "https://download.kiwix.org/zim/wikipedia/wikipedia_en_wp1-0.8_nopic_2026-07.zim",
+        bytes: 2_340_000_000,
+        notes: "General knowledge: Wikipedia's ~50,000 most vital articles, full text.",
+    },
+    ZimCatalogEntry {
+        id: "wikimed",
+        label: "WikiMed medical encyclopedia",
+        name: "wikipedia_en_medicine",
+        flavour: "maxi",
+        fallback_url: "https://download.kiwix.org/zim/wikipedia/wikipedia_en_medicine_maxi_2026-04.zim",
+        bytes: 2_215_521_280,
+        notes: "Every Wikipedia article on medicine, diseases, drugs and anatomy.",
+    },
+    ZimCatalogEntry {
+        id: "osm-wiki",
+        label: "OpenStreetMap wiki",
+        name: "openstreetmap-wiki_en_all",
+        flavour: "nopic",
+        fallback_url: "https://download.kiwix.org/zim/other/openstreetmap-wiki_en_all_nopic_2026-04.zim",
+        bytes: 472_075_264,
+        notes: "Mapping, navigation and location reference from the OSM project.",
+    },
+];
+
+/// Ask the Kiwix OPDS catalog for the current edition of a book: returns
+/// (direct .zim URL, exact size). Falls back to the pinned dated URL.
+fn resolve_zim_url(name: &str, flavour: &str) -> Option<(String, u64)> {
+    let url = format!("https://opds.library.kiwix.org/catalog/v2/entries?name={name}");
+    let body = ureq::get(&url).call().ok()?.into_string().ok()?;
+    for block in body.split("<entry>").skip(1) {
+        let f = block
+            .split("<flavour>")
+            .nth(1)
+            .and_then(|s| s.split("</flavour>").next())
+            .unwrap_or("");
+        if f != flavour {
+            continue;
+        }
+        // The acquisition link carries href (a .zim.meta4 metalink) + length.
+        let link = block
+            .split("<link ")
+            .find(|l| l.contains("opds-spec.org/acquisition"))?;
+        let href = link.split("href=\"").nth(1)?.split('"').next()?;
+        let len: u64 = link
+            .split("length=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let direct = href.strip_suffix(".meta4").unwrap_or(href).to_string();
+        return Some((direct, len));
+    }
+    None
+}
+
+/// Filename prefix identifying any edition of a catalog book.
+fn zim_file_prefix(e: &ZimCatalogEntry) -> String {
+    format!("{}_{}", e.name, e.flavour)
+}
+
+async fn zim_catalog(State(app): State<Shared>) -> Json<Value> {
+    let books = app.library.books();
+    let books_dir = app.library.books_dir();
+    let dls = DOWNLOADS.lock().unwrap().clone();
+    let entries: Vec<Value> = ZIM_CATALOG
+        .iter()
+        .map(|e| {
+            let prefix = zim_file_prefix(e);
+            let in_library = books.iter().any(|b| {
+                b.path
+                    .file_name()
+                    .map(|f| f.to_string_lossy().starts_with(&prefix))
+                    .unwrap_or(false)
+            });
+            // Only complete .zim files count — a ".zim.part" mid-download
+            // must not read as installed.
+            let on_disk = std::fs::read_dir(&books_dir)
+                .map(|rd| {
+                    rd.filter_map(|x| x.ok()).any(|x| {
+                        let n = x.file_name().to_string_lossy().into_owned();
+                        n.starts_with(&prefix) && n.to_ascii_lowercase().ends_with(".zim")
+                    })
+                })
+                .unwrap_or(false);
+            let status = if let Some(p) = dls.get(e.id) {
+                match &p.error {
+                    Some(err) => json!({ "state": "error", "message": err }),
+                    None => json!({ "state": "downloading", "done": p.done, "total": p.total }),
+                }
+            } else if in_library || on_disk {
+                json!({ "state": "installed" })
+            } else {
+                json!({ "state": "absent" })
+            };
+            json!({
+                "id": e.id, "label": e.label, "bytes": e.bytes,
+                "notes": e.notes, "status": status,
+            })
+        })
+        .collect();
+    Json(json!({ "zims": entries }))
+}
+
+async fn zim_download(State(app): State<Shared>, Json(req): Json<DownloadReq>) -> Response {
+    let Some(entry) = ZIM_CATALOG.iter().find(|e| e.id == req.id) else {
+        return (StatusCode::NOT_FOUND, "unknown zim").into_response();
+    };
+    {
+        let mut dls = DOWNLOADS.lock().unwrap();
+        if dls.get(entry.id).map(|p| p.error.is_none()).unwrap_or(false) {
+            return Json(json!({ "ok": true })).into_response();
+        }
+        dls.insert(entry.id.to_string(), DlProgress { total: entry.bytes, ..Default::default() });
+    }
+    let id = entry.id.to_string();
+    let (name, flavour) = (entry.name, entry.flavour);
+    let fallback = entry.fallback_url.to_string();
+    let books_dir = app.library.books_dir();
+    let lib = app.library.clone();
+    tokio::task::spawn_blocking(move || {
+        let (url, bytes) =
+            resolve_zim_url(name, flavour).unwrap_or_else(|| (fallback, 0));
+        if bytes > 0 {
+            if let Some(p) = DOWNLOADS.lock().unwrap().get_mut(&id) {
+                p.total = bytes;
+            }
+        }
+        let file = url
+            .split('/')
+            .next_back()
+            .unwrap_or("book.zim")
+            .split(['?', '#'])
+            .next()
+            .unwrap_or("book.zim")
+            .to_string();
+        let dest = books_dir.join(&file);
+        let result = download_file(&url, &dest, &id);
+        let ok = result.is_ok();
+        {
+            let mut dls = DOWNLOADS.lock().unwrap();
+            match result {
+                Ok(()) => {
+                    dls.remove(&id);
+                }
+                Err(e) => {
+                    if let Some(p) = dls.get_mut(&id) {
+                        p.error = Some(e.to_string());
+                    }
+                    let _ = std::fs::remove_file(dest.with_extension("part"));
+                }
+            }
+        }
+        if ok {
+            // Registers the new book and starts indexing it.
+            lib.scan_books_dir();
+        }
+    });
+    Json(json!({ "ok": true })).into_response()
 }
 
 // ---------- chats (history) ----------
@@ -470,6 +763,25 @@ async fn delete_chat(State(app): State<Shared>, AxPath(id): AxPath<String>) -> R
 }
 
 // ---------- chat turn (SSE) ----------
+
+/// Append the previous turn's cited passages to a fresh candidate pool,
+/// skipping any passage retrieval already found. Fresh results keep their
+/// rank; carried-over passages ride at the end and must survive triage on
+/// their own merits.
+fn merge_carryover(
+    fresh: &mut Vec<librarian_core::Passage>,
+    prev: Vec<librarian_core::Passage>,
+) {
+    let mut seen: std::collections::HashSet<(String, String, u64)> = fresh
+        .iter()
+        .map(|p| (p.zim_id.clone(), p.path.clone(), p.chunk))
+        .collect();
+    for p in prev {
+        if seen.insert((p.zim_id.clone(), p.path.clone(), p.chunk)) {
+            fresh.push(p);
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct ChatReq {
@@ -551,7 +863,20 @@ async fn chat(
             librarian_core::RetrievalPlan::Search(qs) => {
                 // Over-fetch candidates; the triage step below curates them.
                 match app.library.retrieve_multi(qs, (k * 2).max(10)) {
-                    Ok(p) => (p, json!({ "query": qs.join("  |  ") })),
+                    Ok(mut p) => {
+                        // Follow-up turns keep the previous answer's grounding
+                        // in play: last turn's cited passages join the pool
+                        // and face triage like any fresh candidate.
+                        let prev = chat
+                            .messages
+                            .iter()
+                            .rev()
+                            .find(|m| m.role == "assistant" && !m.sources.is_empty())
+                            .map(|m| m.sources.clone())
+                            .unwrap_or_default();
+                        merge_carryover(&mut p, prev);
+                        (p, json!({ "query": qs.join("  |  ") }))
+                    }
                     Err(e) => return err(e.to_string()),
                 }
             }
@@ -566,7 +891,7 @@ async fn chat(
         let passages = if reused {
             passages // previously curated
         } else {
-            match librarian_core::triage_sources(engine.as_ref(), &question, &passages) {
+            match librarian_core::triage_sources(engine.as_ref(), &history, &question, &passages) {
                 None => passages.into_iter().take(k).collect(),
                 Some(keep) if keep.is_empty() => {
                     let near: Vec<librarian_core::Passage> =
@@ -813,4 +1138,43 @@ window.addEventListener('load', function () {{
         None => body.extend_from_slice(script.as_bytes()),
     }
     body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn passage(zim: &str, path: &str, chunk: u64) -> librarian_core::Passage {
+        librarian_core::Passage {
+            zim_id: zim.into(),
+            path: path.into(),
+            title: path.into(),
+            text: "text".into(),
+            chunk,
+            score: 1.0,
+            book: "Book".into(),
+        }
+    }
+
+    #[test]
+    fn carryover_appends_only_unseen_passages() {
+        let mut fresh = vec![passage("z1", "A", 0), passage("z1", "B", 2)];
+        let prev = vec![
+            passage("z1", "A", 0), // duplicate of a fresh hit → skipped
+            passage("z1", "A", 1), // same article, different chunk → kept
+            passage("z2", "C", 0), // different book → kept
+        ];
+        merge_carryover(&mut fresh, prev);
+        let keys: Vec<(String, u64)> =
+            fresh.iter().map(|p| (format!("{}:{}", p.zim_id, p.path), p.chunk)).collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("z1:A".to_string(), 0),
+                ("z1:B".to_string(), 2),
+                ("z1:A".to_string(), 1),
+                ("z2:C".to_string(), 0),
+            ]
+        );
+    }
 }

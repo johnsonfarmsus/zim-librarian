@@ -141,12 +141,11 @@ impl Engine for LlamaEngine {
             .context("creating llama context")?;
 
         let mut tokens = self.model.str_to_token(&prompt, AddBos::Always)?;
-        // If the prompt is too large for the context window, drop whole
-        // sources from the middle rather than truncating blindly at the end.
+        // If the prompt is too large for the context window, drop from the
+        // middle (oldest conversation) — the head carries the system rules and
+        // sources, the tail carries the question itself.
         let budget = self.n_ctx as usize - max_new_tokens.min(self.n_ctx as usize / 4) - 8;
-        if tokens.len() > budget {
-            tokens.truncate(budget);
-        }
+        crate::engine::keep_head_tail(&mut tokens, budget);
 
         // Feed the prompt in n_batch-sized pieces.
         let n_batch = 512usize;

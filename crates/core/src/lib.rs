@@ -48,6 +48,22 @@ pub fn default_data_dir() -> PathBuf {
         .join("zim-librarian")
 }
 
+/// The model a fresh install should start with: the bundled OLMo when
+/// present, otherwise a lone .gguf someone pre-placed, otherwise none.
+fn preferred_model(models_dir: &std::path::Path) -> Option<String> {
+    let ggufs: Vec<String> = std::fs::read_dir(models_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.to_ascii_lowercase().ends_with(".gguf"))
+        .collect();
+    ggufs
+        .iter()
+        .find(|n| n.to_ascii_lowercase().contains("olmo"))
+        .cloned()
+        .or_else(|| (ggufs.len() == 1).then(|| ggufs[0].clone()))
+}
+
 /// Top-level application state shared by every frontend (HTTP server, Tauri).
 pub struct App {
     pub library: Arc<Library>,
@@ -60,16 +76,27 @@ impl App {
     pub fn open(data_dir: PathBuf) -> Result<Arc<App>> {
         let library = Library::open(data_dir.clone())?;
         let settings_path = data_dir.join("settings.json");
-        let settings: Settings = std::fs::read_to_string(&settings_path)
+        let fresh_install = !settings_path.exists();
+        let mut settings: Settings = std::fs::read_to_string(&settings_path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+        // First run: when an installer pre-placed a model (the shell copies
+        // bundled resources into <data>/models before opening the app),
+        // select it so chat works out of the box. An existing settings.json
+        // with model=null is a deliberate choice and stays untouched.
+        if fresh_install && settings.model.is_none() {
+            settings.model = preferred_model(&data_dir.join("models"));
+        }
         let app = Arc::new(App {
             chats: chats::ChatStore::open(&data_dir)?,
             library,
             settings: RwLock::new(settings),
             engine: RwLock::new(None),
         });
+        if fresh_install && app.settings.read().unwrap().model.is_some() {
+            let _ = app.save_settings();
+        }
         app.reload_engine();
         // Pick up anything dropped into the books folder while we were not
         // running, and reindex books whose index is missing (e.g. after an

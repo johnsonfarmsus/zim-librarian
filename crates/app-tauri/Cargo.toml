@@ -8,6 +8,12 @@ license = "MIT"
 
 [workspace]
 
+# The library form is what mobile builds link against (staticlib on iOS,
+# cdylib on Android); desktop keeps using the thin main.rs binary.
+[lib]
+name = "zim_librarian_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

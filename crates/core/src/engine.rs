@@ -64,11 +64,61 @@ pub fn build_messages(
          Keep answers concise and factual.\n\nSOURCES:\n{sources}"
     );
     let mut msgs = vec![ChatMessage { role: "system".into(), content: system }];
-    // Keep a short window of prior turns for conversational context.
-    let tail = history.len().saturating_sub(6);
-    msgs.extend(history[tail..].iter().cloned());
+    // Keep a generous window of prior turns for conversational context —
+    // budgeted by size, not a fixed count, so long chats stay coherent.
+    msgs.extend(history_window(history, ANSWER_HISTORY_CHARS, 16));
     msgs.push(ChatMessage { role: "user".into(), content: question.to_string() });
     msgs
+}
+
+/// Character budget for conversation history in the answer prompt. With the
+/// default 8192-token context and chars ≈ 3× tokens, this leaves ample room
+/// for the system rules + sources block and the generation budget.
+const ANSWER_HISTORY_CHARS: usize = 8000;
+/// Smaller budget for the retrieval planner: it only needs enough of the
+/// conversation to resolve references, not every word of every answer.
+const PLANNER_HISTORY_CHARS: usize = 4000;
+/// One rambling turn must not evict the rest of the window.
+const PER_MESSAGE_CHAR_CAP: usize = 2000;
+
+/// Select the most recent history messages that fit a character budget
+/// (newest kept first, returned in chronological order). Oversized messages
+/// are clipped instead of evicting everything before them.
+pub fn history_window(
+    history: &[ChatMessage],
+    char_budget: usize,
+    max_msgs: usize,
+) -> Vec<ChatMessage> {
+    let mut out: Vec<ChatMessage> = Vec::new();
+    let mut used = 0usize;
+    for m in history.iter().rev() {
+        if out.len() >= max_msgs || used >= char_budget {
+            break;
+        }
+        let cap = PER_MESSAGE_CHAR_CAP.min(char_budget - used);
+        let mut content = m.content.clone();
+        if content.chars().count() > cap {
+            content = content.chars().take(cap).collect();
+            content.push('…');
+        }
+        used += content.chars().count();
+        out.push(ChatMessage { role: m.role.clone(), content });
+    }
+    out.reverse();
+    out
+}
+
+/// Drop tokens from the middle of an over-budget prompt, preserving the head
+/// (system rules + sources) and the tail (recent turns + the question). A
+/// blind end-truncation would cut off the question itself.
+pub fn keep_head_tail<T: Copy>(tokens: &mut Vec<T>, budget: usize) {
+    if tokens.len() <= budget {
+        return;
+    }
+    let head = budget * 2 / 3;
+    let tail = budget - head;
+    let cut = tokens.len() - tail;
+    tokens.drain(head..cut);
 }
 
 /// Build the retrieval query for a question, folding in conversation context
@@ -157,8 +207,7 @@ pub fn plan_retrieval(
         )
     };
     let mut msgs = vec![ChatMessage { role: "system".into(), content: system }];
-    let tail = history.len().saturating_sub(6);
-    msgs.extend(history[tail..].iter().cloned());
+    msgs.extend(history_window(history, PLANNER_HISTORY_CHARS, 12));
     msgs.push(ChatMessage { role: "user".into(), content: question.to_string() });
 
     let mut sink = |_: &str| true;
@@ -167,18 +216,18 @@ pub fn plan_retrieval(
         Err(_) => return RetrievalPlan::Search(vec![contextual_question(history, question)]),
     };
     eprintln!("[planner] {out:?}");
-    let lines: Vec<String> = out
-        .lines()
-        .map(|l| l.trim().trim_matches(['"', '`', '\'', '-', '*']).trim().to_string())
-        .filter(|l| !l.is_empty() && l.chars().count() <= 120)
-        .take(3)
-        .collect();
-    if lines.first().map(|l| l.eq_ignore_ascii_case("none")).unwrap_or(false) {
+    // NONE is checked against the raw first line, before the query filter
+    // (which rejects single words) can eat it.
+    let first_raw = out.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    if first_raw.trim_matches(['"', '`', '\'', '.', '*']).eq_ignore_ascii_case("none") {
         if history.is_empty() {
             return RetrievalPlan::Search(vec![question.to_string()]);
         }
         return RetrievalPlan::ReusePrevious;
     }
+    // Small models often answer the question instead of writing queries;
+    // keep only lines that actually look like keyword queries.
+    let lines: Vec<String> = out.lines().filter_map(clean_query_line).take(3).collect();
     if lines.is_empty() {
         return RetrievalPlan::Search(vec![contextual_question(history, question)]);
     }
@@ -187,6 +236,41 @@ pub fn plan_retrieval(
     let mut queries = lines;
     queries.push(contextual_question(history, question));
     RetrievalPlan::Search(queries)
+}
+
+/// Accept a planner output line only if it plausibly is a keyword query, not
+/// prose, markdown or code the model produced while "answering" instead of
+/// planning. Returns the cleaned query.
+fn clean_query_line(line: &str) -> Option<String> {
+    let s = line.trim();
+    // Markdown, code and shell artifacts disqualify the line outright — a
+    // model that emits them is answering, not planning.
+    if s.contains("**")
+        || s.starts_with('#')
+        || s.contains("://")
+        || s.contains(['`', '<', '>', '{', '}', '=', ';', '$', '|'])
+        || s.starts_with("sudo ")
+        || s.split_whitespace().any(|w| w.chars().count() > 24)
+    {
+        return None;
+    }
+    // Strip list numbering ("1.", "2)", "-", "*") and quoting.
+    let s = s
+        .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == ' ')
+        .trim_matches(['"', '`', '\'', '-', '*'])
+        .trim();
+    if s.is_empty() || s.chars().count() > 120 {
+        return None;
+    }
+    // Sentences aren't queries: reject prose-like lines.
+    let words = s.split_whitespace().count();
+    if !(2..=10).contains(&words) || s.ends_with(':') || s.contains(". ") {
+        return None;
+    }
+    if words > 6 && s.ends_with('.') {
+        return None;
+    }
+    Some(s.trim_end_matches('.').to_string())
 }
 
 /// Triage retrieved candidates the way a librarian skims books before
@@ -199,12 +283,16 @@ pub fn plan_retrieval(
 /// `Some(vec![])` means the model judged NOTHING relevant.
 pub fn triage_sources(
     engine: &dyn Engine,
+    history: &[ChatMessage],
     question: &str,
     candidates: &[Passage],
 ) -> Option<Vec<usize>> {
     if !engine.can_plan() || candidates.is_empty() {
         return None;
     }
+    // Follow-ups like "what about children?" triage blind without the
+    // conversation topic; fold it in the same way retrieval does.
+    let question = contextual_question(history, question);
     let mut list = String::new();
     for (i, p) in candidates.iter().enumerate() {
         let snippet: String = p.text.chars().take(300).collect();
@@ -531,19 +619,19 @@ mod tests {
     fn triage_parses_numbers_none_and_garbage() {
         let cands: Vec<Passage> = (0..6).map(|i| passage(&format!("T{i}"), "text")).collect();
         assert_eq!(
-            triage_sources(&PlanEngine("2, 5"), "q", &cands),
+            triage_sources(&PlanEngine("2, 5"), &[], "q", &cands),
             Some(vec![1, 4])
         );
-        assert_eq!(triage_sources(&PlanEngine("NONE"), "q", &cands), Some(vec![]));
+        assert_eq!(triage_sources(&PlanEngine("NONE"), &[], "q", &cands), Some(vec![]));
         // Out-of-range numbers are dropped; duplicates deduped.
         assert_eq!(
-            triage_sources(&PlanEngine("1, 9, 1, 3"), "q", &cands),
+            triage_sources(&PlanEngine("1, 9, 1, 3"), &[], "q", &cands),
             Some(vec![0, 2])
         );
         // Unparseable output → None → caller falls back to all candidates.
-        assert_eq!(triage_sources(&PlanEngine("hard to say!"), "q", &cands), None);
+        assert_eq!(triage_sources(&PlanEngine("hard to say!"), &[], "q", &cands), None);
         // Engines that can't plan don't triage.
-        assert_eq!(triage_sources(&StubEngine, "q", &cands), None);
+        assert_eq!(triage_sources(&StubEngine, &[], "q", &cands), None);
     }
 
     #[test]
@@ -577,6 +665,99 @@ mod tests {
             RetrievalPlan::Search(qs) => assert!(qs[0].contains("alpine wifi"), "{qs:?}"),
             _ => panic!("expected search"),
         }
+    }
+
+    #[test]
+    fn planner_rejects_prose_and_keeps_queries() {
+        // Real junk observed from a 1B model asked for queries.
+        assert_eq!(clean_query_line("Setting up a wireless access point on Alpine Linux involves several steps. Here are the key terms:"), None);
+        assert_eq!(clean_query_line("3. **WPA2 Encryption**: Ensuring data security."), None);
+        assert_eq!(clean_query_line("bash"), None);
+        assert_eq!(clean_query_line("### Step 1: Bridge the interfaces"), None);
+        assert_eq!(clean_query_line("sudo apt update"), None);
+        assert_eq!(clean_query_line("sudo apt install wpa_supplicant-wlan0 -c/<YOUR_WPA_CONFIG_FILE> -i wlan0"), None);
+        assert_eq!(clean_query_line("Replace `<WPA_CONFIG_FILE>` with the path to your `wpa_supp"), None);
+        // Legitimate queries survive, cleaned.
+        assert_eq!(clean_query_line("1. alpine linux hostapd setup"), Some("alpine linux hostapd setup".into()));
+        assert_eq!(clean_query_line("\"bridge-utils hostapd\""), Some("bridge-utils hostapd".into()));
+        assert_eq!(clean_query_line("- wireless access point configuration"), Some("wireless access point configuration".into()));
+    }
+
+    #[test]
+    fn history_window_keeps_newest_within_budget() {
+        let history: Vec<ChatMessage> = (0..30)
+            .map(|i| ChatMessage {
+                role: if i % 2 == 0 { "user" } else { "assistant" }.into(),
+                content: format!("message number {i} {}", "x".repeat(500)),
+            })
+            .collect();
+        let w = history_window(&history, 2000, 16);
+        // Budget holds…
+        let total: usize = w.iter().map(|m| m.content.chars().count()).sum();
+        assert!(total <= 2000 + 1, "window over budget: {total}");
+        // …the newest message is always present, and order is chronological.
+        assert!(w.last().unwrap().content.contains("message number 29"));
+        assert!(w.len() >= 2);
+        for pair in w.windows(2) {
+            let a: u32 = pair[0].content.split_whitespace().nth(2).unwrap().parse().unwrap();
+            let b: u32 = pair[1].content.split_whitespace().nth(2).unwrap().parse().unwrap();
+            assert!(a < b);
+        }
+        // A single oversized message is clipped, not dropped.
+        let big = vec![ChatMessage { role: "user".into(), content: "y".repeat(9000) }];
+        let w = history_window(&big, 8000, 16);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].content.chars().count() <= PER_MESSAGE_CHAR_CAP + 1);
+        // Message cap: 16 max even under budget.
+        let many: Vec<ChatMessage> = (0..40)
+            .map(|i| ChatMessage { role: "user".into(), content: format!("m{i}") })
+            .collect();
+        assert_eq!(history_window(&many, 100_000, 16).len(), 16);
+    }
+
+    #[test]
+    fn keep_head_tail_preserves_question_end() {
+        let mut v: Vec<u32> = (0..100).collect();
+        keep_head_tail(&mut v, 30);
+        assert_eq!(v.len(), 30);
+        // Head survives (system + sources)…
+        assert_eq!(v[0], 0);
+        assert_eq!(v[19], 19);
+        // …and so does the tail (the question).
+        assert_eq!(*v.last().unwrap(), 99);
+        assert_eq!(v[20], 90);
+        // Under budget → untouched.
+        let mut small: Vec<u32> = (0..10).collect();
+        keep_head_tail(&mut small, 30);
+        assert_eq!(small.len(), 10);
+    }
+
+    struct RecordingEngine(std::sync::Mutex<Vec<ChatMessage>>);
+    impl Engine for RecordingEngine {
+        fn name(&self) -> String {
+            "recording".into()
+        }
+        fn can_plan(&self) -> bool {
+            true
+        }
+        fn generate(&self, m: &[ChatMessage], _s: TokenSink, _max: usize) -> Result<String> {
+            *self.0.lock().unwrap() = m.to_vec();
+            Ok("1".into())
+        }
+    }
+
+    #[test]
+    fn triage_sees_conversation_context_for_followups() {
+        let history = vec![
+            ChatMessage { role: "user".into(), content: "treating burns with home remedies".into() },
+            ChatMessage { role: "assistant".into(), content: "Cool water first [1].".into() },
+        ];
+        let cands = vec![passage("Burn care", "cool running water for ten minutes")];
+        let eng = RecordingEngine(std::sync::Mutex::new(vec![]));
+        triage_sources(&eng, &history, "what about for children?", &cands).unwrap();
+        let seen = eng.0.lock().unwrap();
+        let user = &seen.iter().find(|m| m.role == "user").unwrap().content;
+        assert!(user.contains("treating burns"), "triage prompt lost the topic: {user}");
     }
 
     #[test]

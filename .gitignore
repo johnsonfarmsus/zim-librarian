@@ -1,3 +1,5 @@
 target/
 testdata/*.zim
 .DS_Store
+# Bundled-model payload fetched by scripts/fetch-model.sh — never committed.
+crates/app-tauri/resources/*.gguf

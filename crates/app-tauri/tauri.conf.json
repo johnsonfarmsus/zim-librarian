@@ -22,7 +22,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [],
+    "resources": ["resources/*"],
     "category": "Education",
     "shortDescription": "Offline AI librarian for ZIM libraries",
     "longDescription": "Ask questions in plain language and get answers grounded in your local ZIM library, with clickable citations. Fully offline.",

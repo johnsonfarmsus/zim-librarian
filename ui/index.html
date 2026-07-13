@@ -47,9 +47,25 @@
       </section>
 
       <section class="panel">
-        <div class="panel-head"><h2>Model</h2></div>
+        <div class="panel-head">
+          <h2>Starter library</h2>
+        </div>
+        <div class="hint">Curated books that make a solid offline reference.</div>
+        <div id="zim-catalog" class="catalog"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Model</h2>
+          <button id="add-model-file" class="small" title="Use a .gguf file from anywhere on disk">+ Add</button>
+        </div>
         <select id="model-select"></select>
         <div id="catalog" class="catalog"></div>
+        <div class="url-add">
+          <input id="model-url" placeholder="https://…/model.gguf (direct link)" spellcheck="false">
+          <button id="model-url-go" class="small" title="Download a GGUF from a direct URL">Fetch</button>
+        </div>
+        <div id="url-dl-status" class="hint"></div>
         <div id="model-info" class="hint"></div>
       </section>
     </div>
@@ -81,9 +97,11 @@
         source article.</p>
 
         <h3>Adding books</h3>
-        <p>Get <code>.zim</code> files from
+        <p>The <b>Starter library</b> section offers a curated set (general
+        knowledge, medicine, maps) — one click each. Beyond that, get
+        <code>.zim</code> files from
         <a href="https://library.kiwix.org" target="_blank">library.kiwix.org</a>
-        (free; from ~10&nbsp;MB wikis to all of Wikipedia). Then either drop them
+        (free; from ~10&nbsp;MB wikis to all of Wikipedia). Drop them
         into the <b>books folder</b> (shown in the Library tab — picked up
         automatically, press ⟳&nbsp;Rescan after adding), or click <b>+&nbsp;Add</b>
         to pick a file anywhere on disk — the file is used where it is, nothing is
@@ -92,11 +110,14 @@
 
         <h3>Models</h3>
         <p>Answers are written by a language model that runs entirely on this
-        device. Pick one from the curated list in the Model section and press
-        <b>Download</b> (the one time the app touches the network, and only when
-        you ask). Advanced: any <code>.gguf</code> file placed in the models
-        folder appears in the picker. With no model installed the librarian still
-        works — it returns the most relevant passages verbatim.</p>
+        device. The desktop app ships with <b>OLMo&nbsp;2&nbsp;1B</b> (a fully
+        open model) ready to go. Want a different one? Pick from the curated
+        list and press <b>Download</b>, click <b>+&nbsp;Add</b> to use a
+        <code>.gguf</code> file from anywhere on disk, or paste a direct
+        download link in the <b>Fetch</b> box. The app only touches the network
+        when you ask it to download something. With no model installed the
+        librarian still works — it returns the most relevant passages
+        verbatim.</p>
 
         <h3>Citations you can trust</h3>
         <p>Sources retrieved for each answer are shown as numbered cards. Numbers
@@ -122,10 +143,10 @@
   <div id="fs-modal" class="hidden">
     <div id="fs-box">
       <div class="fs-head">
-        <b>Add a ZIM book</b>
+        <b id="fs-title">Add a ZIM book</b>
         <button id="fs-close" class="small">✕ Close</button>
       </div>
-      <div class="hint">Pick a <code>.zim</code> file — get more at
+      <div class="hint" id="fs-hint">Pick a <code>.zim</code> file — get more at
         <a href="https://library.kiwix.org" target="_blank">library.kiwix.org</a></div>
       <div id="fs-quick" class="fs-quick"></div>
       <div class="fs-path">

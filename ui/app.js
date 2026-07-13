@@ -97,9 +97,10 @@ $("rescan").onclick = async () => {
   refreshLibrary();
 };
 
-/* ---------------- file browser (add book) ---------------- */
+/* ---------------- file browser (add book / add model) ---------------- */
 
 let fsParent = null;
+let fsMode = "zim"; // "zim" adds a book; "gguf" selects a model file
 
 function fmtSize(bytes) {
   if (bytes >= 1 << 30) return (bytes / (1 << 30)).toFixed(1) + " GB";
@@ -121,8 +122,8 @@ async function addBookPath(path) {
 }
 
 async function fsBrowse(path) {
-  const url = path ? `/api/fs?path=${encodeURIComponent(path)}` : "/api/fs";
-  const res = await fetch(url);
+  const q = `exts=${fsMode}` + (path ? `&path=${encodeURIComponent(path)}` : "");
+  const res = await fetch(`/api/fs?${q}`);
   if (!res.ok) return;
   const d = await res.json();
   fsParent = d.parent;
@@ -151,14 +152,24 @@ async function fsBrowse(path) {
     const row = document.createElement("div");
     row.className = "fs-row file";
     const label = document.createElement("span");
-    label.textContent = `📕 ${f.name}`;
+    label.textContent = `${fsMode === "gguf" ? "🧠" : "📕"} ${f.name}`;
     const size = document.createElement("span");
     size.className = "size";
     size.textContent = fmtSize(f.size);
     row.append(label, size);
     row.onclick = async () => {
       row.style.opacity = "0.5";
-      if (await addBookPath(`${d.path}/${f.name}`)) {
+      const full = `${d.path}/${f.name}`;
+      if (fsMode === "gguf") {
+        // Use the model where it is: settings accept an absolute path.
+        await fetch("/api/models", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: full }),
+        });
+        $("fs-modal").classList.add("hidden");
+        refreshModels();
+      } else if (await addBookPath(full)) {
         $("fs-modal").classList.add("hidden");
         refreshLibrary();
       } else {
@@ -170,15 +181,31 @@ async function fsBrowse(path) {
   if (!d.dirs.length && !d.files.length) {
     const empty = document.createElement("div");
     empty.className = "fs-empty";
-    empty.textContent = "No folders or .zim files here.";
+    empty.textContent = `No folders or .${fsMode} files here.`;
     list.appendChild(empty);
   }
 }
 
-$("add-book").onclick = () => {
+function fsOpen(mode) {
+  fsMode = mode;
+  $("fs-title").textContent = mode === "gguf" ? "Choose a model file" : "Add a ZIM book";
+  $("fs-hint").innerHTML = "";
+  if (mode === "gguf") {
+    $("fs-hint").textContent =
+      "Pick a .gguf model — it is used where it is, nothing is copied.";
+  } else {
+    const a = document.createElement("a");
+    a.href = "https://library.kiwix.org";
+    a.target = "_blank";
+    a.textContent = "library.kiwix.org";
+    $("fs-hint").append("Pick a .zim file — get more at ", a);
+  }
   $("fs-modal").classList.remove("hidden");
   fsBrowse(null);
-};
+}
+
+$("add-book").onclick = () => fsOpen("zim");
+$("add-model-file").onclick = () => fsOpen("gguf");
 $("fs-close").onclick = () => $("fs-modal").classList.add("hidden");
 $("fs-up").onclick = () => fsParent && fsBrowse(fsParent);
 $("fs-modal").onclick = (e) => {
@@ -289,6 +316,338 @@ async function refreshCatalog() {
     }, 1500);
   }
   if (!anyDownloading) refreshModels();
+}
+
+/* ---------------- starter-library (ZIM) catalog ---------------- */
+
+let zimPolling = false;
+
+async function refreshZimCatalog() {
+  const { zims } = await (await fetch("/api/zims/catalog")).json();
+  const el = $("zim-catalog");
+  el.innerHTML = "";
+  let anyDownloading = false;
+  for (const z of zims) {
+    const item = document.createElement("div");
+    item.className = "cat-item";
+    const row = document.createElement("div");
+    row.className = "row";
+    const left = document.createElement("div");
+    const t = document.createElement("div");
+    t.className = "t";
+    t.textContent = `${z.label} · ${fmtSize(z.bytes)}`;
+    const n = document.createElement("div");
+    n.className = "n";
+    n.textContent = z.notes;
+    left.append(t, n);
+    row.appendChild(left);
+    item.appendChild(row);
+    if (z.status.state === "installed") {
+      const s = document.createElement("span");
+      s.className = "installed";
+      s.textContent = "✓ in library";
+      row.appendChild(s);
+    } else if (z.status.state === "downloading") {
+      anyDownloading = true;
+      const pct = z.status.total ? Math.round((100 * z.status.done) / z.status.total) : 0;
+      const s = document.createElement("span");
+      s.className = "installed";
+      s.textContent = `${pct}%`;
+      row.appendChild(s);
+      const bar = document.createElement("div");
+      bar.className = "progress";
+      const fill = document.createElement("div");
+      fill.style.width = pct + "%";
+      bar.appendChild(fill);
+      item.appendChild(bar);
+    } else {
+      const b = document.createElement("button");
+      b.textContent = "Download";
+      b.onclick = async () => {
+        b.disabled = true;
+        await fetch("/api/zims/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: z.id }),
+        });
+        refreshZimCatalog();
+      };
+      row.appendChild(b);
+      if (z.status.state === "error") {
+        const err = document.createElement("div");
+        err.className = "err";
+        err.textContent = `Download failed: ${z.status.message}`;
+        item.appendChild(err);
+      }
+    }
+    el.appendChild(item);
+  }
+  if (anyDownloading && !zimPolling) {
+    zimPolling = true;
+    setTimeout(() => {
+      zimPolling = false;
+      refreshZimCatalog();
+    }, 1500);
+  } else if (!anyDownloading) {
+    refreshLibrary();
+  }
+}
+
+/* ---------------- add model from URL ---------------- */
+
+let urlPolling = false;
+
+async function pollUrlDownloads() {
+  const { downloads } = await (await fetch("/api/models/downloads")).json();
+  const el = $("url-dl-status");
+  el.textContent = "";
+  let active = false;
+  for (const d of downloads) {
+    const line = document.createElement("div");
+    const name = d.id.replace(/^url-/, "");
+    if (d.error) {
+      line.textContent = `✗ ${name}: ${d.error}`;
+    } else {
+      active = true;
+      const pct = d.total ? Math.round((100 * d.done) / d.total) : 0;
+      line.textContent = `↓ ${name} — ${pct}%`;
+    }
+    el.appendChild(line);
+  }
+  if (active && !urlPolling) {
+    urlPolling = true;
+    setTimeout(() => {
+      urlPolling = false;
+      pollUrlDownloads();
+    }, 1500);
+  } else if (!active) {
+    refreshModels();
+  }
+}
+
+$("model-url-go").onclick = async () => {
+  const url = $("model-url").value.trim();
+  if (!url) return;
+  const res = await fetch("/api/models/download-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  if (!res.ok) {
+    alert(await res.text());
+    return;
+  }
+  $("model-url").value = "";
+  pollUrlDownloads();
+};
+
+/* ---------------- first-run setup card ---------------- */
+
+let setupDismissed = false;
+let setupStarted = false;
+const setupChecks = {}; // id -> bool, user's checkbox choices (default on)
+
+function removeSetupCard() {
+  const c = $("setup-card");
+  if (c) c.remove();
+}
+
+async function maybeShowSetup() {
+  if (setupDismissed) return;
+  const [{ books }, m, { zims }, { models }] = await Promise.all([
+    (await fetch("/api/library")).json(),
+    (await fetch("/api/models")).json(),
+    (await fetch("/api/zims/catalog")).json(),
+    (await fetch("/api/models/catalog")).json(),
+  ]);
+  const modelReady = m.available.length > 0;
+  const anyActive =
+    zims.some((z) => z.status.state === "downloading") ||
+    models.some((x) => x.status.state === "downloading");
+  // Show on a fresh install; keep showing while its downloads run.
+  if (books.length && modelReady && !anyActive && !setupStarted) return;
+  if (books.length && !setupStarted) return;
+  renderSetupCard(m, zims, models, modelReady);
+}
+
+function renderSetupCard(m, zims, models, modelReady) {
+  removeSetupCard();
+  const card = document.createElement("div");
+  card.id = "setup-card";
+
+  const h = document.createElement("h3");
+  h.textContent = "Welcome! Let's stock your library";
+  const intro = document.createElement("p");
+  intro.className = "hint";
+  intro.textContent =
+    "Pick what to download — everything runs and stays on this device. " +
+    "You can add more (or your own files) later in Library & Model.";
+  card.append(h, intro);
+
+  const rows = [];
+  // Model row: bundled installs already have one.
+  if (modelReady) {
+    const done = document.createElement("div");
+    done.className = "setup-row done";
+    done.textContent = `✓ AI model ready (${m.selected || m.available[0]})`;
+    card.appendChild(done);
+  } else {
+    const olmo = models.find((x) => x.id === "olmo-2-1b");
+    rows.push({
+      id: "model:olmo-2-1b",
+      label: "OLMo 2 1B — the librarian's AI model",
+      bytes: (olmo && olmo.status.total) || (olmo && olmo.bytes) || 935515296,
+      state: olmo ? olmo.status.state : "absent",
+      done: olmo && olmo.status.done,
+      message: olmo && olmo.status.message,
+      kind: "model",
+    });
+  }
+  for (const z of zims) {
+    rows.push({
+      id: z.id,
+      label: z.label,
+      bytes: z.status.total || z.bytes,
+      state: z.status.state,
+      done: z.status.done,
+      message: z.status.message,
+      kind: "zim",
+    });
+  }
+
+  const totalEl = document.createElement("div");
+  const btnRow = document.createElement("div");
+  const updateTotal = () => {
+    const sum = rows
+      .filter((r) => r.state === "absent" && setupChecks[r.id] !== false)
+      .reduce((a, r) => a + r.bytes, 0);
+    totalEl.textContent = sum
+      ? `Selected: ${fmtSize(sum)} — downloaded once, then it's yours offline forever.`
+      : "Nothing selected.";
+  };
+
+  let anyAbsent = false;
+  let anyActive = false;
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = "setup-row";
+    if (r.state === "installed") {
+      row.classList.add("done");
+      row.textContent = `✓ ${r.label}`;
+    } else if (r.state === "downloading") {
+      anyActive = true;
+      const pct = r.bytes ? Math.round((100 * (r.done || 0)) / r.bytes) : 0;
+      const lab = document.createElement("span");
+      lab.textContent = `↓ ${r.label} — ${pct}%`;
+      const bar = document.createElement("div");
+      bar.className = "progress";
+      const fill = document.createElement("div");
+      fill.style.width = pct + "%";
+      bar.appendChild(fill);
+      row.append(lab, bar);
+    } else {
+      anyAbsent = true;
+      const label = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = setupChecks[r.id] !== false;
+      cb.onchange = () => {
+        setupChecks[r.id] = cb.checked;
+        updateTotal();
+      };
+      const span = document.createElement("span");
+      span.textContent = ` ${r.label} · ${fmtSize(r.bytes)}`;
+      label.append(cb, span);
+      row.appendChild(label);
+      if (r.state === "error") {
+        const err = document.createElement("div");
+        err.className = "err";
+        err.textContent = `Download failed: ${r.message} — check the connection and try again.`;
+        row.appendChild(err);
+      }
+    }
+    card.appendChild(row);
+  }
+
+  totalEl.className = "hint total";
+  btnRow.className = "setup-actions";
+  card.append(totalEl, btnRow);
+
+  if (anyAbsent) {
+    updateTotal();
+    const go = document.createElement("button");
+    go.id = "setup-go";
+    go.textContent = "Download selected";
+    go.onclick = async () => {
+      go.disabled = true;
+      setupStarted = true;
+      for (const r of rows) {
+        if (r.state !== "absent" || setupChecks[r.id] === false) continue;
+        if (r.kind === "model") {
+          await fetch("/api/models/download", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: r.id.split(":")[1] }),
+          });
+        } else {
+          await fetch("/api/zims/download", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: r.id }),
+          });
+        }
+      }
+      pollSetup();
+      refreshCatalog();
+      refreshZimCatalog();
+    };
+    const skip = document.createElement("button");
+    skip.className = "small";
+    skip.textContent = anyActive ? "Hide" : "Skip for now";
+    skip.onclick = () => {
+      setupDismissed = true;
+      removeSetupCard();
+    };
+    btnRow.append(go, skip);
+  } else if (anyActive) {
+    totalEl.textContent =
+      "Downloading… you can start chatting as soon as the first book is indexed.";
+    const hide = document.createElement("button");
+    hide.className = "small";
+    hide.textContent = "Hide";
+    hide.onclick = () => {
+      setupDismissed = true;
+      removeSetupCard();
+    };
+    btnRow.append(hide);
+  } else {
+    // Everything requested is in place.
+    totalEl.textContent = "✓ All set — ask your library anything.";
+    setupStarted = false;
+    const ok = document.createElement("button");
+    ok.id = "setup-go";
+    ok.textContent = "Start";
+    ok.onclick = () => {
+      setupDismissed = true;
+      removeSetupCard();
+      refreshLibrary();
+      $("question").focus();
+    };
+    btnRow.append(ok);
+  }
+
+  chatEl.insertBefore(card, chatEl.firstChild);
+  if (anyActive) setTimeout(pollSetup, 1500);
+}
+
+let setupPolling = false;
+function pollSetup() {
+  if (setupPolling || setupDismissed) return;
+  setupPolling = true;
+  setTimeout(async () => {
+    setupPolling = false;
+    await maybeShowSetup();
+  }, 1500);
 }
 
 /* ---------------- about ---------------- */
@@ -590,5 +949,8 @@ $("question").addEventListener("keydown", (e) => {
 refreshLibrary();
 refreshModels();
 refreshCatalog();
+refreshZimCatalog();
 refreshChats();
 greeting();
+maybeShowSetup();
+pollUrlDownloads();
