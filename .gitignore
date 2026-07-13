@@ -3,3 +3,7 @@ testdata/*.zim
 .DS_Store
 # Bundled-model payload fetched by scripts/fetch-model.sh — never committed.
 crates/app-tauri/resources/*.gguf
+# Tauri mobile build outputs
+crates/app-tauri/gen/apple/build/
+crates/app-tauri/gen/apple/Externals/
+crates/app-tauri/gen/apple/assets/

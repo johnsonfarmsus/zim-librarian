@@ -40,8 +40,12 @@ impl LlamaEngine {
     pub fn load(model_path: &Path, n_ctx: u32) -> Result<LlamaEngine> {
         let backend = backend()?;
         // Offload everything to GPU when one exists (Metal/Vulkan/CUDA build);
-        // llama.cpp silently falls back to CPU otherwise.
-        let params = LlamaModelParams::default().with_n_gpu_layers(1_000_000);
+        // llama.cpp silently falls back to CPU otherwise. The iOS *simulator*
+        // is the exception: its Metal support stalls llama.cpp, so stay on CPU
+        // there (real devices do use Metal).
+        let n_gpu_layers: u32 =
+            if cfg!(all(target_os = "ios", target_abi = "sim")) { 0 } else { 1_000_000 };
+        let params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
         let model = LlamaModel::load_from_file(backend, model_path, &params)
             .with_context(|| format!("loading model {}", model_path.display()))?;
         Ok(LlamaEngine {

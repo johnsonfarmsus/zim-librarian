@@ -97,15 +97,16 @@ impl App {
         if fresh_install && app.settings.read().unwrap().model.is_some() {
             let _ = app.save_settings();
         }
-        app.reload_engine();
-        // Pick up anything dropped into the books folder while we were not
-        // running, and reindex books whose index is missing (e.g. after an
-        // index-format change). Off-thread: startup stays instant.
-        let lib = app.library.clone();
+        // Engine loading takes seconds (a GGUF read + GPU upload) — do it in
+        // the background so the server and UI come up instantly; the stub
+        // engine answers extractively until the model is in. Same thread then
+        // picks up new books and reindexes stale ones.
+        let bg = app.clone();
         std::thread::spawn(move || {
-            lib.scan_books_dir();
-            for id in lib.books_needing_index() {
-                let _ = lib.start_indexing(&id);
+            bg.reload_engine();
+            bg.library.scan_books_dir();
+            for id in bg.library.books_needing_index() {
+                let _ = bg.library.start_indexing(&id);
             }
         });
         Ok(app)
@@ -168,7 +169,9 @@ impl App {
     }
 
     pub fn engine(&self) -> Arc<dyn Engine> {
-        self.engine.read().unwrap().clone().expect("engine initialized")
+        // The stub answers extractively while the real model is still
+        // loading in the startup background thread.
+        self.engine.read().unwrap().clone().unwrap_or_else(|| Arc::new(StubEngine))
     }
 
     /// Retrieval for a conversation turn: folds history into the query when

@@ -18,6 +18,7 @@ pub fn run() {
             };
             install_bundled_models(app.handle(), &data_dir);
 
+            eprintln!("[shell] data dir: {}", data_dir.display());
             let core = librarian_core::App::open(data_dir)?;
             // Start the embedded server on an OS-assigned localhost port
             // before the UI loads.
@@ -25,8 +26,10 @@ pub fn run() {
             let (addr, _handle) = rt.block_on(librarian_server::serve(core, 0))?;
             // Keep the runtime alive for the life of the process.
             std::mem::forget(rt);
+            eprintln!("[shell] serving on http://{addr}");
 
             let url: tauri::Url = format!("http://{addr}").parse()?;
+            #[allow(unused_mut)]
             let mut win = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
                 .title("ZIM Librarian");
             #[cfg(not(any(target_os = "ios", target_os = "android")))]

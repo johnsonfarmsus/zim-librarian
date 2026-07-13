@@ -28,6 +28,10 @@
     "longDescription": "Ask questions in plain language and get answers grounded in your local ZIM library, with clickable citations. Fully offline.",
     "macOS": {
       "minimumSystemVersion": "12.0"
+    },
+    "iOS": {
+      "frameworks": ["Accelerate", "Metal", "MetalKit"],
+      "minimumSystemVersion": "14.0"
     }
   }
 }
