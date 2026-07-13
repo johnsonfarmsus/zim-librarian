@@ -48,7 +48,7 @@ reasoning behind every tooling choice.
 Mobile fine print: models and books are downloaded in-app (stores frown on
 multi-GB packages); 32-bit Android devices are limited to smaller books
 (< ~300 MB) by their address space, and phone-class hardware wants the
-smaller models (OLMo 1B / SmolLM2).
+smaller models (OLMo 1B-class).
 
 ## Build & run (developers)
 
@@ -103,11 +103,11 @@ port; `ZIM_LIBRARIAN_NO_BROWSER=1` suppresses browser launch.
 | quality upgrade, 8 GB+ | Gemma 4 E2B-it Q4_K_M | ~2.9 GB | best grounding/citation quality tested |
 | previous-gen Gemma | Gemma 3n E2B-it Q4_K_M | ~2.8 GB | fallback if Gemma 4 is unsupported by the bundled llama.cpp |
 | strongest fully-open, 16 GB+ | OLMo-3-7B-Instruct Q4_K_M | ~4.5 GB | |
-| very old machines / 32-bit phones | SmolLM2-360M-Instruct Q8 | ~0.4 GB | relies on the citation-alignment pass; treat as search + summaries |
 
 In side-by-side testing on the same library, Gemma-class models followed the
 cite-only-from-sources instruction natively (every sentence cited, content
 faithful to the passages); OLMo-2-1B cites partially and occasionally mixes
 in outside knowledge — the retrieval planner's output filter, the triage
-pass and citation alignment exist to keep it honest; SmolLM2-360M is best
-treated as "search with summaries".
+pass and citation alignment exist to keep it honest. Hardware below OLMo
+1B's comfort zone still works in extractive mode (verbatim passages), and
+any tiny `.gguf` can be added manually by those who want one.

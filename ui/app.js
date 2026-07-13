@@ -328,6 +328,8 @@ async function refreshZimCatalog() {
   el.innerHTML = "";
   let anyDownloading = false;
   for (const z of zims) {
+    // Installed starter books already appear as real book cards above.
+    if (z.status.state === "installed") continue;
     const item = document.createElement("div");
     item.className = "cat-item";
     const row = document.createElement("div");
@@ -342,12 +344,7 @@ async function refreshZimCatalog() {
     left.append(t, n);
     row.appendChild(left);
     item.appendChild(row);
-    if (z.status.state === "installed") {
-      const s = document.createElement("span");
-      s.className = "installed";
-      s.textContent = "✓ in library";
-      row.appendChild(s);
-    } else if (z.status.state === "downloading") {
+    if (z.status.state === "downloading") {
       anyDownloading = true;
       const pct = z.status.total ? Math.round((100 * z.status.done) / z.status.total) : 0;
       const s = document.createElement("span");

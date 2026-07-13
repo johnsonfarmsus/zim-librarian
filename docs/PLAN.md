@@ -141,7 +141,7 @@ accurate citations". That points at lexical retrieval, not vectors:
   desktop installers and auto-selected on first run.
 - Stronger hardware: OLMo-3-7B-Instruct (~4.5 GB Q4) or Gemma 4 E2B
   (~2.9 GB, best grounding quality tested; open-weight, not OSI-open).
-  Weaker/32-bit hardware: SmolLM2-360M (~0.4 GB).
+  Hardware below that runs extractive mode, or any tiny .gguf added manually.
 - Adding models: curated catalog with one-click downloads, a `.gguf` file
   picker (used in place), a paste-a-URL fetch box, or the drop folder —
   chat templates come from the GGUF metadata, so new model families work

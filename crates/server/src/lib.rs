@@ -330,14 +330,6 @@ const CATALOG: &[CatalogEntry] = &[
         bytes: 4_471_601_792,
         notes: "Strongest fully-open option; best on 16 GB+ machines.",
     },
-    CatalogEntry {
-        id: "smollm2-360m",
-        label: "SmolLM2 360M (tiny)",
-        file: "SmolLM2-360M-Instruct-Q8_0.gguf",
-        url: "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q8_0.gguf",
-        bytes: 386_404_992,
-        notes: "For very old or low-memory hardware. Treat answers as search summaries.",
-    },
 ];
 
 #[derive(Default, Clone)]
