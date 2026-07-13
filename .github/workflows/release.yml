@@ -1,6 +1,8 @@
 name: Release desktop apps
-# Builds unsigned installers on tag push (v*). Add signing secrets before
-# public distribution: APPLE_CERTIFICATE / WINDOWS_CERTIFICATE etc.
+# Builds installers on tag push (v*). macOS artifacts are signed and
+# notarized when the APPLE_* secrets are configured (see docs/RELEASING.md);
+# without them the workflow still produces unsigned builds. Windows is
+# currently unsigned (SmartScreen warning documented in the README).
 on:
   push:
     tags: ["v*"]
@@ -15,6 +17,8 @@ jobs:
           - os: ubuntu-latest
           - os: windows-latest
     runs-on: ${{ matrix.os }}
+    env:
+      HAS_APPLE_KEY: ${{ secrets.APPLE_API_KEY_CONTENT != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -27,9 +31,22 @@ jobs:
       - name: Fetch bundled model (OLMo 2 1B)
         shell: bash
         run: sh scripts/fetch-model.sh
+      - name: Write App Store Connect API key
+        if: runner.os == 'macOS' && env.HAS_APPLE_KEY == 'true'
+        shell: bash
+        env:
+          KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: printf '%s' "$KEY_CONTENT" > "$RUNNER_TEMP/apple-api-key.p8"
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS code signing + notarization (no-ops when unset).
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_CONTENT && format('{0}/apple-api-key.p8', runner.temp) || '' }}
         with:
           projectPath: crates/app-tauri
           tagName: ${{ github.ref_name }}

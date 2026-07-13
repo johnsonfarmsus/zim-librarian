@@ -43,6 +43,11 @@
           </span>
         </div>
         <div id="books" class="books"></div>
+        <div class="url-add">
+          <input id="zim-url" placeholder="https://…/book.zim (direct link)" spellcheck="false">
+          <button id="zim-url-go" class="small" title="Download a .zim from a direct URL">Fetch</button>
+        </div>
+        <div id="zim-dl-status" class="hint"></div>
         <div class="hint" id="books-dir-hint"></div>
       </section>
 
@@ -101,7 +106,8 @@
         knowledge, medicine, maps) — one click each. Beyond that, get
         <code>.zim</code> files from
         <a href="https://library.kiwix.org" target="_blank">library.kiwix.org</a>
-        (free; from ~10&nbsp;MB wikis to all of Wikipedia). Drop them
+        (free; from ~10&nbsp;MB wikis to all of Wikipedia): paste a direct
+        link in the <b>Fetch</b> box, drop files
         into the <b>books folder</b> (shown in the Library tab — picked up
         automatically, press ⟳&nbsp;Rescan after adding), or click <b>+&nbsp;Add</b>
         to pick a file anywhere on disk — the file is used where it is, nothing is

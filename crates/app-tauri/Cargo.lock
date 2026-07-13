@@ -2129,7 +2129,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "librarian-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -2144,7 +2144,7 @@ dependencies = [
 
 [[package]]
 name = "librarian-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5823,7 +5823,7 @@ dependencies = [
 
 [[package]]
 name = "zim-librarian"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "librarian-core",
@@ -5835,7 +5835,7 @@ dependencies = [
 
 [[package]]
 name = "zimlib"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "memmap2",

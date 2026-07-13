@@ -41,6 +41,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/models/downloads", get(url_download_status))
         .route("/api/zims/catalog", get(zim_catalog))
         .route("/api/zims/download", post(zim_download))
+        .route("/api/zims/download-url", post(zim_download_url))
         .route("/api/chats", get(list_chats).post(new_chat))
         .route("/api/chats/:id", get(get_chat).delete(delete_chat))
         .route("/api/chats/:id/star", post(star_chat))
@@ -478,19 +479,28 @@ async fn model_download_url(State(app): State<Shared>, Json(req): Json<UrlDownlo
     Json(json!({ "ok": true, "id": id })).into_response()
 }
 
-/// Progress of ad-hoc URL downloads (the catalog reports its own).
+/// Progress of ad-hoc URL downloads (the catalogs report their own).
+/// `kind` is "model" (url-…) or "zim" (zimurl-…).
 async fn url_download_status() -> Json<Value> {
     let dls = DOWNLOADS.lock().unwrap();
     let entries: Vec<Value> = dls
         .iter()
-        .filter(|(k, _)| k.starts_with("url-"))
-        .map(|(k, p)| {
-            json!({
+        .filter_map(|(k, p)| {
+            let (kind, name) = if let Some(n) = k.strip_prefix("zimurl-") {
+                ("zim", n)
+            } else if let Some(n) = k.strip_prefix("url-") {
+                ("model", n)
+            } else {
+                return None;
+            };
+            Some(json!({
                 "id": k,
+                "kind": kind,
+                "name": name,
                 "done": p.done,
                 "total": p.total,
                 "error": p.error,
-            })
+            }))
         })
         .collect();
     Json(json!({ "downloads": entries }))
@@ -717,6 +727,59 @@ async fn zim_download(State(app): State<Shared>, Json(req): Json<DownloadReq>) -
         }
     });
     Json(json!({ "ok": true })).into_response()
+}
+
+/// Download any direct .zim URL into the books folder ("Add from URL" —
+/// pasted from library.kiwix.org). Registered and indexed on completion.
+async fn zim_download_url(State(app): State<Shared>, Json(req): Json<UrlDownloadReq>) -> Response {
+    let url = req.url.trim().to_string();
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return (StatusCode::BAD_REQUEST, "not an http(s) URL").into_response();
+    }
+    let base = url
+        .split('/')
+        .next_back()
+        .unwrap_or("")
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_string();
+    if !base.to_ascii_lowercase().ends_with(".zim") || base.len() < 5 {
+        return (StatusCode::BAD_REQUEST, "URL must point to a .zim file").into_response();
+    }
+    let id = format!("zimurl-{base}");
+    {
+        let mut dls = DOWNLOADS.lock().unwrap();
+        if dls.get(&id).map(|p| p.error.is_none()).unwrap_or(false) {
+            return Json(json!({ "ok": true, "id": id })).into_response();
+        }
+        dls.insert(id.clone(), DlProgress::default());
+    }
+    let dest = app.library.books_dir().join(&base);
+    let lib = app.library.clone();
+    let dl_id = id.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = download_file(&url, &dest, &dl_id);
+        let ok = result.is_ok();
+        {
+            let mut dls = DOWNLOADS.lock().unwrap();
+            match result {
+                Ok(()) => {
+                    dls.remove(&dl_id);
+                }
+                Err(e) => {
+                    if let Some(p) = dls.get_mut(&dl_id) {
+                        p.error = Some(e.to_string());
+                    }
+                    let _ = std::fs::remove_file(dest.with_extension("part"));
+                }
+            }
+        }
+        if ok {
+            lib.scan_books_dir();
+        }
+    });
+    Json(json!({ "ok": true, "id": id })).into_response()
 }
 
 // ---------- chats (history) ----------

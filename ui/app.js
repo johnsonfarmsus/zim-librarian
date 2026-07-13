@@ -399,20 +399,21 @@ let urlPolling = false;
 
 async function pollUrlDownloads() {
   const { downloads } = await (await fetch("/api/models/downloads")).json();
-  const el = $("url-dl-status");
-  el.textContent = "";
+  const modelEl = $("url-dl-status");
+  const zimEl = $("zim-dl-status");
+  modelEl.textContent = "";
+  zimEl.textContent = "";
   let active = false;
   for (const d of downloads) {
     const line = document.createElement("div");
-    const name = d.id.replace(/^url-/, "");
     if (d.error) {
-      line.textContent = `✗ ${name}: ${d.error}`;
+      line.textContent = `✗ ${d.name}: ${d.error}`;
     } else {
       active = true;
       const pct = d.total ? Math.round((100 * d.done) / d.total) : 0;
-      line.textContent = `↓ ${name} — ${pct}%`;
+      line.textContent = `↓ ${d.name} — ${pct}%`;
     }
-    el.appendChild(line);
+    (d.kind === "zim" ? zimEl : modelEl).appendChild(line);
   }
   if (active && !urlPolling) {
     urlPolling = true;
@@ -422,24 +423,29 @@ async function pollUrlDownloads() {
     }, 1500);
   } else if (!active) {
     refreshModels();
+    refreshLibrary();
   }
 }
 
-$("model-url-go").onclick = async () => {
-  const url = $("model-url").value.trim();
-  if (!url) return;
-  const res = await fetch("/api/models/download-url", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
-  });
-  if (!res.ok) {
-    alert(await res.text());
-    return;
-  }
-  $("model-url").value = "";
-  pollUrlDownloads();
-};
+function urlAdd(inputId, endpoint) {
+  return async () => {
+    const url = $(inputId).value.trim();
+    if (!url) return;
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    if (!res.ok) {
+      alert(await res.text());
+      return;
+    }
+    $(inputId).value = "";
+    pollUrlDownloads();
+  };
+}
+$("model-url-go").onclick = urlAdd("model-url", "/api/models/download-url");
+$("zim-url-go").onclick = urlAdd("zim-url", "/api/zims/download-url");
 
 /* ---------------- first-run setup card ---------------- */
 

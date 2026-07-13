@@ -234,8 +234,9 @@ impl Library {
                 continue;
             }
             // add_book rejects duplicates (same ZIM UUID) and non-ZIM files.
-            if self.add_book(&path).is_ok() {
-                added += 1;
+            match self.add_book(&path) {
+                Ok(_) => added += 1,
+                Err(e) => eprintln!("skipping {}: {e:#}", path.display()),
             }
         }
         added

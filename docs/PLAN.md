@@ -136,17 +136,23 @@ accurate citations". That points at lexical retrieval, not vectors:
 
 ### Models: OLMo baseline, curated open alternatives
 
-- Default recommendation: **OLMo-2-1B-Instruct** (Q4_K_M GGUF, ~0.9 GB) —
-  fully open (weights *and* data/training code), fine on 8 GB RAM.
-- Stronger hardware: OLMo-2-7B-Instruct (~4.5 GB Q4). Weaker/mobile:
-  SmolLM2-360M / Qwen2.5-0.5B-class GGUFs (~0.3–0.5 GB). Gemma-3 variants
-  (open-weight, not OSI-open) selectable for users who prefer them.
-- Any `.gguf` dropped into `<data>/models/` appears in the model picker —
+- Shipped default: **OLMo-2-1B-Instruct** (Q4_K_M GGUF, ~0.9 GB) — fully
+  open (weights *and* data/training code), fine on 8 GB RAM — bundled into
+  desktop installers and auto-selected on first run.
+- Stronger hardware: OLMo-3-7B-Instruct (~4.5 GB Q4) or Gemma 4 E2B
+  (~2.9 GB, best grounding quality tested; open-weight, not OSI-open).
+  Weaker/32-bit hardware: SmolLM2-360M (~0.4 GB).
+- Adding models: curated catalog with one-click downloads, a `.gguf` file
+  picker (used in place), a paste-a-URL fetch box, or the drop folder —
   chat templates come from the GGUF metadata, so new model families work
-  without code changes.
-- Distribution: the "full" installer bundles the default model (satisfies
-  strict "no network after install"); the small installer fetches the chosen
-  model once during setup. Both are one-file installs.
+  without code changes (with a manual Gemma/ChatML fallback for templates
+  llama.cpp's engine can't parse).
+- Distribution: desktop installers bundle the default model (~1 GB
+  installers; strict "no network after install"); mobile and the headless
+  binary offer it as a pre-checked download on the first-run setup screen,
+  alongside the curated starter library of ZIMs (Wikipedia vital articles,
+  WikiMed, OpenStreetMap wiki — resolved to the current edition via the
+  Kiwix OPDS catalog at download time).
 
 ### Grounding & citations
 
@@ -232,16 +238,20 @@ Two ways to add books, deliberately both:
 
 ## Requirement flags (honest deviations)
 
-- **Phones/tablets:** the codebase targets them via Tauri 2 (the UI is
-  responsive, core is portable Rust), but building/signing iOS/Android
-  packages requires Xcode/Android SDK CI — not produced in this repo yet.
-  Desktop (Win/macOS/Linux) is fully covered. This is a packaging task, not
-  an architectural one.
-- **"Download one file"**: on macOS/Windows unsigned binaries trigger
-  Gatekeeper/SmartScreen warnings; shipping without scary dialogs requires a
-  developer-certificate signing step in CI (standard, but external to code).
-- **Strict offline**: fully met with the bundled-model installer; the small
-  installer needs one user-initiated download at setup.
+- **Phones/tablets:** iOS and Android projects are generated and working —
+  the full pipeline (indexing, retrieval, on-device llama.cpp generation
+  with citations) verified in the iOS simulator and on real Android
+  hardware. Store submission remains: TestFlight/App Store need the Apple
+  account signed into Xcode; Play needs an upload keystore and a one-time
+  developer registration. 32-bit Android devices are limited to smaller
+  books (address space) and the smallest models.
+- **"Download one file"**: the release workflow signs + notarizes macOS
+  builds once the `APPLE_*` repo secrets are configured
+  (`docs/RELEASING.md`); Windows remains unsigned (SmartScreen warning)
+  until an Authenticode cert is added.
+- **Strict offline**: desktop installers bundle the model — offline from
+  first launch. Mobile/headless installs make user-initiated downloads at
+  setup (models + books), then never touch the network again.
 - **Hallucination bounds**: grounding is enforced by prompt + retrieval, and
   citations let users verify every claim, but a small LLM can still
   occasionally misstate a source. The extractive mode is the zero-trust
