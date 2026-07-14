@@ -249,4 +249,35 @@ mod tests {
         assert!(!streamed.is_empty());
         assert!(streamed.starts_with(answer.split('[').next().unwrap()));
     }
+
+    /// A book whose file moved (new path, same UUID) must be healed by a rescan
+    /// rather than getting stuck "missing". This is the mobile drop-in /
+    /// reinstall case: the app data container path changes, so the stored path
+    /// no longer exists even though the .zim is present under a new path.
+    #[test]
+    fn scan_heals_moved_book() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = App::open(tmp.path().to_path_buf()).unwrap();
+        let books_dir = app.library.books_dir();
+        std::fs::create_dir_all(&books_dir).unwrap();
+
+        let first = books_dir.join("first.zim");
+        std::fs::copy(testdata("alpinelinux.zim"), &first).unwrap();
+        let id = app.library.add_book(&first).unwrap().id;
+
+        // Simulate the file moving: same bytes at a new path, old path gone.
+        let moved = books_dir.join("moved.zim");
+        std::fs::rename(&first, &moved).unwrap();
+        assert!(
+            !app.library.book(&id).unwrap().path.exists(),
+            "precondition: stored path is now missing"
+        );
+
+        let added = app.library.scan_books_dir();
+        assert_eq!(added, 0, "a moved book is healed, not added as new");
+        assert_eq!(app.library.books().len(), 1, "no duplicate book created");
+        let healed = app.library.book(&id).unwrap();
+        assert_eq!(healed.path, moved, "stored path healed to the new location");
+        assert!(healed.path.exists());
+    }
 }

@@ -233,10 +233,41 @@ impl Library {
             if !is_zim || known.contains(&path) {
                 continue;
             }
-            // add_book rejects duplicates (same ZIM UUID) and non-ZIM files.
-            match self.add_book(&path) {
-                Ok(_) => added += 1,
-                Err(e) => eprintln!("skipping {}: {e:#}", path.display()),
+            // A .zim at an unrecognised path is either a brand-new book or an
+            // existing one whose file moved (e.g. the app data container changed
+            // across a reinstall, leaving the stored path "missing"). Open it to
+            // read its UUID so we can tell the two cases apart — otherwise a
+            // moved file trips add_book's UUID-duplicate check and the book is
+            // stuck "missing" forever, with no way to recover.
+            let zim = match Zim::open(&path) {
+                Ok(z) => z,
+                Err(e) => {
+                    eprintln!("skipping {}: {e:#}", path.display());
+                    continue;
+                }
+            };
+            let id = zim.uuid_hex();
+            if self.book(&id).is_some() {
+                // Same book, new location: heal the stored path (the index is
+                // still valid — identical content and UUID) and drop any stale
+                // open handle so the next read uses the new path.
+                if let Some(b) = self
+                    .manifest
+                    .write()
+                    .unwrap()
+                    .books
+                    .iter_mut()
+                    .find(|b| b.id == id)
+                {
+                    b.path = path.clone();
+                }
+                self.open.lock().unwrap().remove(&id);
+                let _ = self.save();
+            } else {
+                match self.add_book(&path) {
+                    Ok(_) => added += 1,
+                    Err(e) => eprintln!("skipping {}: {e:#}", path.display()),
+                }
             }
         }
         added
