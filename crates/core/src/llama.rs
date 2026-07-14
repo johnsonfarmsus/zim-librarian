@@ -40,11 +40,12 @@ impl LlamaEngine {
     pub fn load(model_path: &Path, n_ctx: u32) -> Result<LlamaEngine> {
         let backend = backend()?;
         // Offload everything to GPU when one exists (Metal/Vulkan/CUDA build);
-        // llama.cpp silently falls back to CPU otherwise. The iOS *simulator*
-        // is the exception: its Metal support stalls llama.cpp, so stay on CPU
-        // there (real devices do use Metal).
-        let n_gpu_layers: u32 =
-            if cfg!(all(target_os = "ios", target_abi = "sim")) { 0 } else { 1_000_000 };
+        // llama.cpp silently falls back to CPU otherwise. iOS is the exception:
+        // its Metal backend crashes llama.cpp — the simulator stalls, and on a
+        // real device ggml_backend_metal_buffer allocation segfaults (SIGSEGV in
+        // ggml_metal_buffer_is_shared while building the KV cache). So stay on
+        // CPU for all iOS; the Accelerate framework keeps it reasonably fast.
+        let n_gpu_layers: u32 = if cfg!(target_os = "ios") { 0 } else { 1_000_000 };
         let params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
         let model = LlamaModel::load_from_file(backend, model_path, &params)
             .with_context(|| format!("loading model {}", model_path.display()))?;
