@@ -21,13 +21,18 @@
   }
 }
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
+/* overflow:hidden keeps the document itself from scrolling (only #chat scrolls);
+   without it, focusing the composer on iOS scrolls the whole page and drags the
+   mobile top bar up under the status bar. */
+html, body { height: 100%; margin: 0; overflow: hidden; }
 body {
   font: 15px/1.55 -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
   background: var(--bg);
   color: var(--ink);
 }
-#app { display: flex; height: 100vh; }
+/* 100% (not 100vh): match body's safe-area height so #app doesn't overflow past
+   the viewport on iOS and create a scrollable document. */
+#app { display: flex; height: 100%; }
 
 /* ---------- sidebar ---------- */
 #sidebar {

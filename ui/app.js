@@ -95,7 +95,10 @@ async function refreshLibrary() {
   const anyIndexing = status.indexing.some((p) => !p.finished);
   // Gate the chat composer on having something to answer from, and show a
   // first-run indexing banner so the user knows when the library is ready.
-  const anyIndexed = books.some((b) => b.indexed);
+  // A book only counts as answerable if it's indexed AND its file is still
+  // present — a "moved or missing" book is indexed in the DB but can't be read,
+  // so it must not unlock the composer.
+  const anyIndexed = books.some((b) => b.indexed && !b.missing);
   document.body.classList.toggle("has-indexed", anyIndexed);
   updateIndexBanner(books, prog);
   if (anyIndexing) setTimeout(refreshLibrary, 1200);

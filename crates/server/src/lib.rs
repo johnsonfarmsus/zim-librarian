@@ -74,7 +74,18 @@ async fn static_asset(uri: Uri) -> Response {
     match Assets::get(path) {
         Some(f) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref().to_string())], f.data).into_response()
+            // no-store: assets are embedded in the binary and served from memory,
+            // so there is no reason to cache them — and caching is harmful. The
+            // WKWebView cache survives app updates, so without this a user who
+            // updates the app can be served the previous version's stale JS/CSS.
+            (
+                [
+                    (header::CONTENT_TYPE, mime.as_ref().to_string()),
+                    (header::CACHE_CONTROL, "no-store".to_string()),
+                ],
+                f.data,
+            )
+                .into_response()
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
