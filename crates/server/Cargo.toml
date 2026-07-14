@@ -14,7 +14,11 @@ axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "sync"] }
 tokio-stream = "0.1"
 futures = "0.3"
-rust-embed = "8"
+# debug-embed: embed the UI even in debug builds. Without it, rust-embed reads
+# from the `../../ui` path at runtime in debug mode, which does not exist inside
+# a mobile app sandbox on a real device (works on the simulator only because it
+# shares the Mac filesystem) — causing a "not found" blank screen on device.
+rust-embed = { version = "8", features = ["debug-embed"] }
 mime_guess = "2"
 dirs = "5"
 ureq = "2"
