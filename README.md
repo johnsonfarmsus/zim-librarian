@@ -111,3 +111,11 @@ in outside knowledge — the retrieval planner's output filter, the triage
 pass and citation alignment exist to keep it honest. Hardware below OLMo
 1B's comfort zone still works in extractive mode (verbatim passages), and
 any tiny `.gguf` can be added manually by those who want one.
+
+## License
+
+ZIM Librarian is free software under the **GNU AGPL-3.0**, with an additional
+permission (AGPL §7) allowing distribution of official builds through the Apple
+App Store and Google Play Store. See [`LICENSE`](LICENSE). The complete
+corresponding source is this repository:
+<https://github.com/johnsonfarmsus/zim-librarian>.
