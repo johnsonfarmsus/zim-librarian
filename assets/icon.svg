@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- solid background (no alpha — iOS app icons forbid transparency) -->
+  <rect width="1024" height="1024" fill="#1f6f6b"/>
+  <rect width="1024" height="1024" fill="url(#g)"/>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.14"/>
+    </linearGradient>
+  </defs>
+
+  <!-- open book -->
+  <g>
+    <!-- page shadow -->
+    <path d="M512 300 C 430 262, 300 258, 232 288 L 232 736 C 300 706, 430 710, 512 748 Z"
+          fill="#000000" opacity="0.12" transform="translate(10 14)"/>
+    <path d="M512 300 C 594 262, 724 258, 792 288 L 792 736 C 724 706, 594 710, 512 748 Z"
+          fill="#000000" opacity="0.12" transform="translate(10 14)"/>
+
+    <!-- left page -->
+    <path d="M512 300 C 430 262, 300 258, 232 288 L 232 736 C 300 706, 430 710, 512 748 Z"
+          fill="#f5f1e6"/>
+    <!-- right page -->
+    <path d="M512 300 C 594 262, 724 258, 792 288 L 792 736 C 724 706, 594 710, 512 748 Z"
+          fill="#efe9da"/>
+
+    <!-- spine -->
+    <rect x="502" y="300" width="20" height="448" rx="10" fill="#123f3c"/>
+
+    <!-- text lines (knowledge) -->
+    <g fill="#2c8b85">
+      <rect x="286" y="360" width="176" height="20" rx="10"/>
+      <rect x="286" y="418" width="176" height="20" rx="10"/>
+      <rect x="286" y="476" width="140" height="20" rx="10"/>
+      <rect x="562" y="360" width="176" height="20" rx="10"/>
+      <rect x="562" y="418" width="176" height="20" rx="10"/>
+      <rect x="562" y="476" width="140" height="20" rx="10"/>
+    </g>
+
+    <!-- citation badge over the pages -->
+    <circle cx="648" cy="596" r="70" fill="#f2b134"/>
+    <text x="648" y="614" font-family="Helvetica, Arial, sans-serif" font-size="42"
+          font-weight="800" letter-spacing="1" text-anchor="middle" fill="#123f3c">ZIM</text>
+  </g>
+</svg>
