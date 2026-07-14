@@ -14,9 +14,14 @@ function showTab(name) {
   $("tab-setup").classList.toggle("active", !chats);
   $("pane-chats").classList.toggle("hidden", !chats);
   $("pane-setup").classList.toggle("hidden", chats);
+  document.body.classList.remove("nav-open"); // close the mobile drawer on select
 }
 $("tab-chats").onclick = () => showTab("chats");
 $("tab-setup").onclick = () => showTab("setup");
+
+/* mobile off-canvas navigation */
+$("nav-toggle").onclick = () => document.body.classList.toggle("nav-open");
+$("scrim").onclick = () => document.body.classList.remove("nav-open");
 
 /* ---------------- library panel ---------------- */
 
@@ -87,7 +92,35 @@ async function refreshLibrary() {
     el.appendChild(div);
   }
   const anyIndexing = status.indexing.some((p) => !p.finished);
+  // Gate the chat composer on having something to answer from, and show a
+  // first-run indexing banner so the user knows when the library is ready.
+  const anyIndexed = books.some((b) => b.indexed);
+  document.body.classList.toggle("has-indexed", anyIndexed);
+  updateIndexBanner(books, prog);
   if (anyIndexing) setTimeout(refreshLibrary, 1200);
+}
+
+// Show a clear status banner in the main area during the one-time index, so the
+// user knows the app is working and exactly when they can start asking.
+function updateIndexBanner(books, prog) {
+  const banner = $("index-banner");
+  const active = books
+    .map((b) => ({ b, p: prog[b.id] }))
+    .find((x) => x.p && !x.p.finished);
+  if (active) {
+    const pct = active.p.total
+      ? Math.round((100 * active.p.done) / active.p.total)
+      : 0;
+    banner.textContent =
+      `Indexing “${active.b.title}” — ${pct}%. This happens once; you can ask ` +
+      `questions as soon as it finishes.`;
+    banner.classList.remove("hidden");
+  } else if (books.length && !books.some((b) => b.indexed)) {
+    banner.textContent = "Preparing your book for search… this only takes a moment.";
+    banner.classList.remove("hidden");
+  } else {
+    banner.classList.add("hidden");
+  }
 }
 
 $("rescan").onclick = async () => {
