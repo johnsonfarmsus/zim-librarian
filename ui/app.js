@@ -891,7 +891,9 @@ function startNewChat() {
   chatEl.innerHTML = "";
   greeting();
   refreshChats();
-  $("question").focus();
+  // Auto-focus the composer on desktop only. On mobile, focusing here pops the
+  // keyboard on every new chat, which is jarring — let the user tap to type.
+  if (!window.matchMedia("(max-width: 820px)").matches) $("question").focus();
   document.body.classList.remove("nav-open"); // starting a new chat dismisses the mobile drawer
 }
 

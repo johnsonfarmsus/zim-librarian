@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- interactive-widget=resizes-content: when the on-screen keyboard opens, shrink
+     the layout viewport so the composer reflows above it, instead of iOS
+     scrolling the whole webview up (which strands the mobile top bar under the
+     status bar and does not restore on dismiss). -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>ZIM Librarian</title>
 <link rel="stylesheet" href="style.css">
 </head>
