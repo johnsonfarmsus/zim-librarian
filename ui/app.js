@@ -14,7 +14,8 @@ function showTab(name) {
   $("tab-setup").classList.toggle("active", !chats);
   $("pane-chats").classList.toggle("hidden", !chats);
   $("pane-setup").classList.toggle("hidden", chats);
-  document.body.classList.remove("nav-open"); // close the mobile drawer on select
+  // NOTE: switching tabs must NOT close the drawer — it only closes when the
+  // user dismisses it (scrim/toggle) or actually selects/starts a chat.
 }
 $("tab-chats").onclick = () => showTab("chats");
 $("tab-setup").onclick = () => showTab("setup");
@@ -888,6 +889,7 @@ function startNewChat() {
   greeting();
   refreshChats();
   $("question").focus();
+  document.body.classList.remove("nav-open"); // starting a new chat dismisses the mobile drawer
 }
 
 async function loadChat(id) {
@@ -895,6 +897,7 @@ async function loadChat(id) {
   if (!res.ok) return;
   const { chat } = await res.json();
   currentChatId = chat.id;
+  document.body.classList.remove("nav-open"); // selecting a chat dismisses the mobile drawer
   chatEl.innerHTML = "";
   for (const m of chat.messages) {
     const bubble = addMsg(m.role, "");
