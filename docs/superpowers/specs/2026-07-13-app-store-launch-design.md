@@ -104,16 +104,30 @@ later **must be gitignored and never committed**. Conclusion: **safe to go publi
 - **Closed testing: 12 testers for 14 continuous days** (mandatory for newer
   personal developer accounts) → then production. This is the schedule long pole;
   its clock starts as early as possible.
+- **Tester sourcing:** the user has 2 Android phones + household members for
+  genuine on-device testing, but needs 12 opted-in **Google accounts**. Plan:
+  household/friends create free Google accounts and **opt in via the web link**
+  (an Android device is not strictly required to be a counted tester, though
+  on-device testing is better); fill any remainder via a **mutual tester-exchange
+  community**. Recruiting the 12 is the first Android action so the 14-day clock
+  starts immediately.
 
 ### F. Desktop signed release
 - **macOS**: Developer ID signing + **notarization** via the `APPLE_*` GitHub
   Actions secrets the `release.yml` workflow already expects (steps in
   `docs/RELEASING.md`).
-- **Windows**: installer with a documented SmartScreen caveat (unsigned), or an
-  Authenticode cert if available.
+- **Windows**: **ship unsigned at launch** with a documented SmartScreen note.
+  Pursue **SignPath Foundation** (free OV code signing for qualifying OSS,
+  HSM-hosted, integrates into the existing GitHub Actions release workflow) as a
+  **fast-follow** — its external vetting/approval has a lead time we do not
+  control, so it must **not gate the coordinated launch**; swap the CI signing
+  step in once approved (re-signs the installer, no app changes).
+  **Not** pursuing the Microsoft Store / MSIX route for this launch — it is a
+  separate certification + submission pipeline (a fourth store) that cuts against
+  one coordinated launch; it remains an optional additional channel for later.
 - **Linux**: `.AppImage` / `.deb` (unaffected by signing).
-- Tag the release version → workflow builds signed/notarized installers → publish
-  the GitHub release.
+- Tag the release version → workflow builds signed (macOS) / unsigned (Windows) /
+  packaged (Linux) installers → publish the GitHub release.
 
 ## Sequence
 
