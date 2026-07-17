@@ -509,38 +509,93 @@ async fn url_download_status() -> Json<Value> {
     Json(json!({ "downloads": entries }))
 }
 
+/// Download `url` to `dest`, resumably. Progress streams into `DOWNLOADS[id]`.
+///
+/// The transfer is written to a `.part` file and resumed with HTTP range
+/// requests, so an interruption — most importantly iOS suspending the app when
+/// it's backgrounded, which freezes the connection — continues from the bytes
+/// already on disk instead of starting a multi-GB download over. Each attempt
+/// picks up where the last left off; a stalled/dead connection fails fast via
+/// the read timeout and the loop retries. (True *background* progress needs
+/// native URLSession; this makes foreground + resume-on-return reliable.)
 fn download_file(url: &str, dest: &std::path::Path, id: &str) -> anyhow::Result<()> {
     use std::io::{Read, Write};
-    let resp = ureq::get(url).call()?;
-    let total: u64 = resp
-        .header("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    if total > 0 {
-        if let Some(p) = DOWNLOADS.lock().unwrap().get_mut(id) {
-            p.total = total;
-        }
-    }
+    const MAX_ATTEMPTS: u32 = 12;
     let tmp = dest.with_extension("part");
-    let mut file = std::fs::File::create(&tmp)?;
-    let mut reader = resp.into_reader();
-    let mut buf = vec![0u8; 1 << 20];
-    let mut done: u64 = 0;
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(30))
+        .timeout_read(std::time::Duration::from_secs(60))
+        .build();
+
+    let mut attempt = 0u32;
     loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
+        attempt += 1;
+        let existing = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+        let attempt_result = (|| -> anyhow::Result<()> {
+            let mut req = agent.get(url);
+            if existing > 0 {
+                req = req.set("Range", &format!("bytes={existing}-"));
+            }
+            let resp = req.call()?;
+            // 206 = the server honored our range and is sending only the
+            // remaining bytes → append. Anything else (200, or a server that
+            // ignores Range) sends the whole body → restart the .part from zero.
+            let resuming = resp.status() == 206 && existing > 0;
+            let body_len: u64 = resp
+                .header("content-length")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let total = if resuming {
+                // "Content-Range: bytes 100-999/1000" → grand total is after '/'.
+                resp.header("content-range")
+                    .and_then(|v| v.rsplit('/').next())
+                    .and_then(|t| t.trim().parse().ok())
+                    .unwrap_or(existing + body_len)
+            } else {
+                body_len
+            };
+            if total > 0 {
+                if let Some(p) = DOWNLOADS.lock().unwrap().get_mut(id) {
+                    p.total = total;
+                }
+            }
+            let mut file = if resuming {
+                std::fs::OpenOptions::new().append(true).open(&tmp)?
+            } else {
+                std::fs::File::create(&tmp)?
+            };
+            let mut done: u64 = if resuming { existing } else { 0 };
+            if let Some(p) = DOWNLOADS.lock().unwrap().get_mut(id) {
+                p.done = done;
+            }
+            let mut reader = resp.into_reader();
+            let mut buf = vec![0u8; 1 << 20];
+            loop {
+                let n = reader.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                file.write_all(&buf[..n])?;
+                done += n as u64;
+                if let Some(p) = DOWNLOADS.lock().unwrap().get_mut(id) {
+                    p.done = done;
+                }
+            }
+            file.flush()?;
+            drop(file);
+            if total > 0 && done < total {
+                anyhow::bail!("connection dropped at {done} of {total} bytes");
+            }
+            Ok(())
+        })();
+        match attempt_result {
+            Ok(()) => break,
+            Err(e) if attempt >= MAX_ATTEMPTS => {
+                return Err(e.context(format!("download failed after {attempt} attempts")));
+            }
+            // Leave the .part on disk; the next attempt resumes from it.
+            Err(_) => std::thread::sleep(std::time::Duration::from_secs(2)),
         }
-        file.write_all(&buf[..n])?;
-        done += n as u64;
-        if let Some(p) = DOWNLOADS.lock().unwrap().get_mut(id) {
-            p.done = done;
-        }
-    }
-    file.flush()?;
-    drop(file);
-    if total > 0 && done < total {
-        anyhow::bail!("download truncated ({done} of {total} bytes)");
     }
     std::fs::rename(&tmp, dest)?;
     Ok(())
