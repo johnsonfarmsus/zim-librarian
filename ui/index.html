@@ -2,11 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<!-- interactive-widget=resizes-content: when the on-screen keyboard opens, shrink
+<!-- maximum-scale=1: this is an app UI, not a zoomable document. Without it iOS
+     WKWebView (a) auto-zooms when a sub-16px input is focused and often never
+     zooms back, and (b) gets its scale stuck "wide" after a landscape→portrait
+     rotation. Locking scale keeps the layout pinned to device-width in both
+     cases; nothing here is wider than the screen, so nothing is clipped.
+     interactive-widget=resizes-content: when the on-screen keyboard opens, shrink
      the layout viewport so the composer reflows above it, instead of iOS
      scrolling the whole webview up (which strands the mobile top bar under the
      status bar and does not restore on dismiss). -->
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>ZIM Librarian</title>
 <link rel="stylesheet" href="style.css">
 </head>

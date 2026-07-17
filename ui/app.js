@@ -24,6 +24,42 @@ $("tab-setup").onclick = () => showTab("setup");
 $("nav-toggle").onclick = () => document.body.classList.toggle("nav-open");
 $("scrim").onclick = () => document.body.classList.remove("nav-open");
 
+/* ---------------- keep the screen awake while indexing ----------------
+   iOS suspends the whole app (server + indexing thread) when the screen
+   auto-locks, so a multi-minute index freezes partway and the book is left
+   half-registered. Hold a screen wake lock while indexing runs; the browser
+   drops it automatically when the tab is hidden, so re-acquire on return. */
+let wakeLock = null;
+let wantAwake = false;
+// Any long-running operation that must not be cut short by the screen locking.
+// Each source sets its own flag (so they don't clobber each other); the screen
+// stays awake while ANY is active. Downloads matter as much as indexing — a
+// multi-GB download otherwise dies the moment the screen sleeps.
+const awakeFor = { indexing: false, urlDl: false, modelDl: false, zimDl: false };
+async function setWakeLock(want) {
+  wantAwake = want;
+  try {
+    if (want && !wakeLock && "wakeLock" in navigator) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => {
+        wakeLock = null;
+      });
+    } else if (!want && wakeLock) {
+      const w = wakeLock;
+      wakeLock = null;
+      await w.release();
+    }
+  } catch (_) {
+    wakeLock = null; // wake lock unsupported or denied — best effort only
+  }
+}
+function syncWake() {
+  setWakeLock(Object.values(awakeFor).some(Boolean));
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && wantAwake) setWakeLock(true);
+});
+
 /* ---------------- library panel ---------------- */
 
 let firstLibraryLoad = true;
@@ -93,6 +129,8 @@ async function refreshLibrary() {
     el.appendChild(div);
   }
   const anyIndexing = status.indexing.some((p) => !p.finished);
+  awakeFor.indexing = anyIndexing; // hold the screen on so the index can finish
+  syncWake();
   // Gate the chat composer on having something to answer from, and show a
   // first-run indexing banner so the user knows when the library is ready.
   // A book only counts as answerable if it's indexed AND its file is still
@@ -345,6 +383,8 @@ async function refreshCatalog() {
     }
     el.appendChild(item);
   }
+  awakeFor.modelDl = anyDownloading; // keep the screen on while a model downloads
+  syncWake();
   if (anyDownloading && !catalogPolling) {
     catalogPolling = true;
     setTimeout(() => {
@@ -416,6 +456,8 @@ async function refreshZimCatalog() {
     }
     el.appendChild(item);
   }
+  awakeFor.zimDl = anyDownloading; // keep the screen on while a book downloads
+  syncWake();
   if (anyDownloading && !zimPolling) {
     zimPolling = true;
     setTimeout(() => {
@@ -449,6 +491,8 @@ async function pollUrlDownloads() {
     }
     (d.kind === "zim" ? zimEl : modelEl).appendChild(line);
   }
+  awakeFor.urlDl = active; // keep the screen on while a URL download runs
+  syncWake();
   if (active && !urlPolling) {
     urlPolling = true;
     setTimeout(() => {
@@ -504,6 +548,9 @@ async function maybeShowSetup() {
   const anyActive =
     zims.some((z) => z.status.state === "downloading") ||
     models.some((x) => x.status.state === "downloading");
+  // (Screen-wake during setup downloads is handled by the model/zim catalog
+  // pollers' modelDl/zimDl flags, which track the same downloads and can't get
+  // stuck if this card is dismissed mid-download.)
   // Show on a fresh install; keep showing while its downloads run.
   if (books.length && modelReady && !anyActive && !setupStarted) return;
   if (books.length && !setupStarted) return;
