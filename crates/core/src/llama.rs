@@ -49,6 +49,11 @@ impl LlamaEngine {
         let params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
         let model = LlamaModel::load_from_file(backend, model_path, &params)
             .with_context(|| format!("loading model {}", model_path.display()))?;
+        // iOS apps get a tight memory budget; the default 8k KV cache + compute
+        // buffers fail to allocate on a 3 GB device (new_context errors out, so
+        // chat fails with "creating llama context"). Cap the context on iOS so
+        // inference fits in memory. Desktop keeps the full configured window.
+        let n_ctx = if cfg!(target_os = "ios") { n_ctx.min(2048) } else { n_ctx };
         Ok(LlamaEngine {
             backend,
             model,
@@ -137,9 +142,15 @@ impl Engine for LlamaEngine {
         let _guard = self.lock.lock().unwrap();
         let prompt = self.render_prompt(messages)?;
 
+        // A smaller batch trims the compute-buffer allocation on memory-
+        // constrained iOS devices; desktop keeps the larger, faster batch.
+        // This same value MUST size the prompt-feeding loop below: decoding a
+        // batch larger than the context's n_batch trips a GGML assert that
+        // aborts the whole process (a hard crash on device, not a Rust error).
+        let n_batch: usize = if cfg!(target_os = "ios") { 256 } else { 512 };
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(self.n_ctx))
-            .with_n_batch(512);
+            .with_n_batch(n_batch as u32);
         let mut ctx = self
             .model
             .new_context(self.backend, ctx_params)
@@ -152,8 +163,8 @@ impl Engine for LlamaEngine {
         let budget = self.n_ctx as usize - max_new_tokens.min(self.n_ctx as usize / 4) - 8;
         crate::engine::keep_head_tail(&mut tokens, budget);
 
-        // Feed the prompt in n_batch-sized pieces.
-        let n_batch = 512usize;
+        // Feed the prompt in n_batch-sized pieces (same n_batch the context was
+        // built with — see the crash note above).
         let mut batch = LlamaBatch::new(n_batch, 1);
         let last_idx = tokens.len() - 1;
         let mut pos = 0usize;
@@ -181,6 +192,14 @@ impl Engine for LlamaEngine {
         let mut n_cur = tokens.len();
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         for _ in 0..max_new_tokens {
+            // The KV cache only holds n_ctx positions. Once generation fills the
+            // window, stop cleanly with what we have rather than decoding past
+            // it — writing beyond n_ctx errors out as "decode failed" and throws
+            // away the whole answer mid-stream. On a small context (mobile caps
+            // at 2048) a rambly model can reach this before emitting an EOG.
+            if n_cur >= self.n_ctx as usize {
+                break;
+            }
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
             sampler.accept(token);
             if self.model.is_eog_token(token) {
