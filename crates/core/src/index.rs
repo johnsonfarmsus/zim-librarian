@@ -19,6 +19,20 @@ use crate::text::{chunk_text, html_to_text};
 
 pub const CHUNK_TARGET_CHARS: usize = 1100;
 
+/// How many ZIM entries to process between durable commits. Small enough that
+/// an interrupted index loses only seconds of work, large enough to avoid
+/// tantivy segment churn. ~11 commits for the 108 k-entry OSM wiki.
+pub const CHECKPOINT_ENTRIES: u32 = 10_000;
+
+/// How an indexing run ended.
+pub enum IndexOutcome {
+    /// Reached the end of the ZIM — the book is fully indexed.
+    Done { chunks: u64 },
+    /// Stopped early (cancel requested, e.g. the app is being backgrounded);
+    /// committed progress up to `next_entry`, to resume there next time.
+    Paused { next_entry: u32, chunks: u64 },
+}
+
 #[derive(Clone)]
 struct Fields {
     zim: Field,
@@ -75,59 +89,103 @@ impl GlobalIndex {
         Ok(GlobalIndex { index, writer: std::sync::Mutex::new(writer), reader, fields })
     }
 
-    /// Walk every HTML article in the ZIM, extract text, chunk it and index
-    /// it. Blocking; run on a worker thread. Idempotent: any existing chunks
-    /// for this ZIM id are removed first.
-    pub fn index_zim(&self, zim: &Zim, zim_id: &str, progress: &IndexProgress) -> Result<u64> {
+    /// Walk every HTML article in the ZIM, extract text, chunk it and index it.
+    /// Blocking; run on a worker thread.
+    ///
+    /// Resumable: pass the last checkpoint's `resume_from` entry index and
+    /// `chunks_so_far`; indexing continues from there and commits every
+    /// `CHECKPOINT_ENTRIES`, invoking `checkpoint(next_entry, chunks_total)`
+    /// after each commit so the caller can persist a durable resume point. This
+    /// is what lets a large index survive the app being suspended/killed on iOS
+    /// (each app session picks up where the last left off) rather than
+    /// restarting from zero. When `progress.cancel` is set the run commits what
+    /// it has and returns `Paused` at the current entry.
+    ///
+    /// A crash between a commit and the caller persisting the checkpoint can
+    /// re-process at most one batch on resume; the duplicate chunks are
+    /// harmless because retrieval dedups by `(zim_id, path, chunk)`. Only a
+    /// fresh run (`resume_from == 0`) clears the book's existing chunks.
+    pub fn index_zim(
+        &self,
+        zim: &Zim,
+        zim_id: &str,
+        resume_from: u32,
+        chunks_so_far: u64,
+        progress: &IndexProgress,
+        mut checkpoint: impl FnMut(u32, u64),
+    ) -> Result<IndexOutcome> {
         let f = &self.fields;
         let mut writer = self.writer.lock().unwrap();
-        writer.delete_term(tantivy::Term::from_field_text(f.zim, zim_id));
+        if resume_from == 0 {
+            writer.delete_term(tantivy::Term::from_field_text(f.zim, zim_id));
+        }
 
         let article_ns = zim.article_namespace();
         let n = zim.entry_count();
         progress.total_entries.store(n as u64, Ordering::Relaxed);
-        let mut chunks_total = 0u64;
+        progress.done_entries.store(resume_from as u64, Ordering::Relaxed);
+        let mut chunks_total = chunks_so_far;
+        progress.chunks.store(chunks_total, Ordering::Relaxed);
+        let mut since_commit = 0u32;
 
-        for i in 0..n {
+        let mut i = resume_from;
+        while i < n {
             if progress.cancel.load(Ordering::Relaxed) {
-                writer.rollback()?;
-                anyhow::bail!("indexing cancelled");
+                // Checkpoint and stop: commit what we have so a later run
+                // resumes from exactly here instead of losing this session.
+                writer.commit()?;
+                checkpoint(i, chunks_total);
+                return Ok(IndexOutcome::Paused { next_entry: i, chunks: chunks_total });
             }
             progress.done_entries.store(i as u64 + 1, Ordering::Relaxed);
-            let Ok(entry) = zim.entry_at(i) else { continue };
-            let is_pdf = entry.mime.as_deref() == Some("application/pdf");
-            if entry.namespace != article_ns || !(entry.is_html() || is_pdf) {
-                continue;
+            if let Ok(entry) = zim.entry_at(i) {
+                let is_pdf = entry.mime.as_deref() == Some("application/pdf");
+                if entry.namespace == article_ns && (entry.is_html() || is_pdf) {
+                    if let (EntryKind::Content { .. }, Ok(bytes)) = (&entry.kind, zim.content(&entry))
+                    {
+                        let extracted = if is_pdf {
+                            // Some ZIMs (e.g. the "zimgit" collections) are
+                            // bundles of PDF documents rather than HTML articles.
+                            pdf_to_text(&bytes).map(|text| {
+                                let name = entry
+                                    .title
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or(&entry.title)
+                                    .trim_end_matches(".pdf")
+                                    .trim()
+                                    .to_string();
+                                (name, text)
+                            })
+                        } else {
+                            let html = String::from_utf8_lossy(&bytes);
+                            let e = html_to_text(&html);
+                            Some((e.title.unwrap_or_else(|| entry.title.clone()), e.text))
+                        };
+                        if let Some((title, text)) = extracted {
+                            for (ci, chunk) in
+                                chunk_text(&text, CHUNK_TARGET_CHARS).into_iter().enumerate()
+                            {
+                                let mut doc = TantivyDocument::default();
+                                doc.add_text(f.zim, zim_id);
+                                doc.add_text(f.path, &entry.path);
+                                doc.add_text(f.title, &title);
+                                doc.add_text(f.body, &chunk);
+                                doc.add_u64(f.chunk, ci as u64);
+                                writer.add_document(doc)?;
+                                chunks_total += 1;
+                            }
+                        }
+                    }
+                }
             }
-            let EntryKind::Content { .. } = entry.kind else { continue };
-            let Ok(bytes) = zim.content(&entry) else { continue };
-            let (title, text) = if is_pdf {
-                // Some ZIMs (e.g. the "zimgit" collections) are bundles of
-                // PDF documents rather than HTML articles.
-                let Some(text) = pdf_to_text(&bytes) else { continue };
-                let name = entry
-                    .title
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&entry.title)
-                    .trim_end_matches(".pdf")
-                    .trim()
-                    .to_string();
-                (name, text)
-            } else {
-                let html = String::from_utf8_lossy(&bytes);
-                let e = html_to_text(&html);
-                (e.title.unwrap_or_else(|| entry.title.clone()), e.text)
-            };
-            for (ci, chunk) in chunk_text(&text, CHUNK_TARGET_CHARS).into_iter().enumerate() {
-                let mut doc = TantivyDocument::default();
-                doc.add_text(f.zim, zim_id);
-                doc.add_text(f.path, &entry.path);
-                doc.add_text(f.title, &title);
-                doc.add_text(f.body, &chunk);
-                doc.add_u64(f.chunk, ci as u64);
-                writer.add_document(doc)?;
-                chunks_total += 1;
+            since_commit += 1;
+            i += 1;
+            if since_commit >= CHECKPOINT_ENTRIES {
+                writer.commit()?;
+                checkpoint(i, chunks_total);
+                progress.chunks.store(chunks_total, Ordering::Relaxed);
+                since_commit = 0;
             }
         }
         writer.commit()?;
@@ -135,8 +193,7 @@ impl GlobalIndex {
         // reload policy is delayed, which races tests and first queries).
         self.reader.reload()?;
         progress.chunks.store(chunks_total, Ordering::Relaxed);
-        progress.finished.store(true, Ordering::Relaxed);
-        Ok(chunks_total)
+        Ok(IndexOutcome::Done { chunks: chunks_total })
     }
 
     /// Version of the indexing pipeline; bump when indexing gains new

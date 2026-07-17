@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use zimlib::Zim;
 
 use crate::index::{
-    global_index_dir, merge_passages, query_from_question, GlobalIndex, IndexProgress, Passage,
-    SharedProgress,
+    global_index_dir, merge_passages, query_from_question, GlobalIndex, IndexOutcome,
+    IndexProgress, Passage, SharedProgress,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +29,12 @@ pub struct BookMeta {
     /// Indexing pipeline version this book was last indexed with.
     #[serde(default)]
     pub index_version: u32,
+    /// Resumable-indexing checkpoint: how many ZIM entries have been indexed so
+    /// far. A partially-indexed book (indexed == false, indexed_upto > 0)
+    /// resumes from here instead of restarting, so progress survives the app
+    /// being suspended or killed mid-index on mobile.
+    #[serde(default)]
+    pub indexed_upto: u32,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -69,6 +75,7 @@ impl Library {
             for b in &mut manifest.books {
                 b.indexed = false;
                 b.chunks = 0;
+                b.indexed_upto = 0;
             }
             if let Ok(rd) = std::fs::read_dir(data_dir.join("index")) {
                 for e in rd.filter_map(|e| e.ok()) {
@@ -83,6 +90,30 @@ impl Library {
         for b in &mut manifest.books {
             if b.indexed && b.index_version < GlobalIndex::PIPELINE_VERSION {
                 b.indexed = false;
+                b.chunks = 0;
+                b.indexed_upto = 0;
+            }
+        }
+        // iOS reassigns the app's data-container path across reinstalls: it
+        // migrates the files but the absolute paths stored here go stale, so
+        // every book reads as "missing" and the chat composer stays locked.
+        // Re-root any book whose file vanished but whose filename is present in
+        // the managed books dir. This is synchronous (done before the first UI
+        // query, unlike the background scan) and matches by filename rather than
+        // opening the ZIM — opening a multi-GB book here would stall startup and
+        // risk OOM on a memory-constrained phone.
+        let books_dir = data_dir.join("books");
+        let mut healed = false;
+        for b in &mut manifest.books {
+            if b.path.exists() {
+                continue;
+            }
+            if let Some(name) = b.path.file_name() {
+                let candidate = books_dir.join(name);
+                if candidate.exists() {
+                    b.path = candidate;
+                    healed = true;
+                }
             }
         }
         let index = GlobalIndex::open_or_create(&global_dir)?;
@@ -93,7 +124,7 @@ impl Library {
             indexing: Mutex::new(HashMap::new()),
             index,
         });
-        if fresh_index {
+        if fresh_index || healed {
             lib.save()?;
         }
         Ok(lib)
@@ -153,6 +184,7 @@ impl Library {
             indexed: false,
             chunks: 0,
             index_version: 0,
+            indexed_upto: 0,
         };
         self.manifest.write().unwrap().books.push(meta.clone());
         self.save()?;
@@ -170,34 +202,84 @@ impl Library {
         let id = id.to_string();
         let p = progress.clone();
         std::thread::spawn(move || {
-            let run = || -> Result<u64> {
+            // Resume from the last durable checkpoint rather than restarting.
+            let (resume_from, chunks_so_far) = lib
+                .book(&id)
+                .map(|b| (b.indexed_upto, b.chunks))
+                .unwrap_or((0, 0));
+            let run = || -> Result<IndexOutcome> {
                 let zim = lib.zim(&id)?;
-                lib.index.index_zim(&zim, &id, &p)
+                let ckpt_lib = lib.clone();
+                let ckpt_id = id.clone();
+                lib.index.index_zim(
+                    &zim,
+                    &id,
+                    resume_from,
+                    chunks_so_far,
+                    &p,
+                    // Persist the resume point after every committed batch so an
+                    // interruption (iOS suspending/killing the app) costs at most
+                    // one batch of re-work, never the whole book.
+                    move |next_entry, chunks| {
+                        {
+                            let mut m = ckpt_lib.manifest.write().unwrap();
+                            if let Some(b) = m.books.iter_mut().find(|b| b.id == ckpt_id) {
+                                b.indexed_upto = next_entry;
+                                b.chunks = chunks;
+                            }
+                        }
+                        let _ = ckpt_lib.save();
+                    },
+                )
             };
             // A panic in the indexer must not leave the UI stuck on
             // "indexing…" forever.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("indexer panicked")));
             match result {
-                Ok(chunks) => {
+                Ok(IndexOutcome::Done { chunks }) => {
                     {
                         let mut m = lib.manifest.write().unwrap();
                         if let Some(b) = m.books.iter_mut().find(|b| b.id == id) {
                             b.indexed = true;
                             b.chunks = chunks;
+                            b.indexed_upto = b.entry_count;
                             b.index_version = GlobalIndex::PIPELINE_VERSION;
                         }
                     }
                     let _ = lib.save();
                 }
+                Ok(IndexOutcome::Paused { next_entry, chunks }) => {
+                    // Not finished — just this session ended. The checkpoint is
+                    // already saved; a later run (next launch / background task)
+                    // resumes from here.
+                    let mut m = lib.manifest.write().unwrap();
+                    if let Some(b) = m.books.iter_mut().find(|b| b.id == id) {
+                        b.indexed_upto = next_entry;
+                        b.chunks = chunks;
+                    }
+                    drop(m);
+                    let _ = lib.save();
+                }
                 Err(e) => {
                     eprintln!("indexing {id} failed: {e:#}");
                     p.failed.store(true, Ordering::Relaxed);
-                    p.finished.store(true, Ordering::Relaxed);
                 }
             }
+            // This indexing run has ended (done, paused, or failed); the UI and
+            // wait_for_indexing key off `finished` to know no run is active.
+            p.finished.store(true, Ordering::Relaxed);
         });
         Ok(progress)
+    }
+
+    /// Ask every in-flight indexing run to checkpoint and stop. Used when the
+    /// app is about to be suspended (iOS background/expiration) so progress is
+    /// saved durably; the next run resumes from the checkpoint.
+    pub fn pause_all_indexing(&self) {
+        for p in self.indexing.lock().unwrap().values() {
+            p.cancel.store(true, Ordering::Relaxed);
+        }
     }
 
     pub fn remove_book(&self, id: &str) -> Result<()> {
@@ -306,6 +388,24 @@ impl Library {
         Ok(merge_passages(vec![best.into_values().collect()], k))
     }
 
+    /// Block until no book is actively indexing. Used at startup to hold the
+    /// (memory-hungry) LLM load until the initial index pass finishes, so a
+    /// large book isn't competing with the ~1 GB model for memory on a small
+    /// device — the concurrency, not the book's size on disk, is what jetsam-
+    /// kills a 3 GB phone.
+    pub fn wait_for_indexing(&self) {
+        loop {
+            let pending = {
+                let idx = self.indexing.lock().unwrap();
+                idx.values().any(|p| !p.finished.load(Ordering::Relaxed))
+            };
+            if !pending {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+
     /// Books that claim a search index but don't have one (e.g. after the
     /// index format changed) — App::open reindexes these at startup.
     pub fn books_needing_index(&self) -> Vec<String> {
@@ -314,5 +414,63 @@ impl Library {
             .filter(|b| !b.indexed && b.path.exists())
             .map(|b| b.id.clone())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn testdata(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata")
+            .join(name)
+    }
+
+    fn wait(p: &SharedProgress) {
+        for _ in 0..1800 {
+            if p.finished.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("indexing timed out");
+    }
+
+    /// A book whose index was interrupted partway (app killed/suspended on iOS)
+    /// resumes from its checkpoint on the next run and ends fully indexed, with
+    /// its content still retrievable — no restart-from-zero, no lost data.
+    #[test]
+    fn resumes_index_from_checkpoint_without_losing_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path().to_path_buf()).unwrap();
+        let file = lib.books_dir().join("a.zim");
+        std::fs::copy(testdata("alpinelinux.zim"), &file).unwrap();
+        let id = lib.add_book(&file).unwrap().id;
+        wait(&lib.indexing.lock().unwrap().get(&id).unwrap().clone());
+        assert!(lib.book(&id).unwrap().indexed, "baseline index completes");
+        assert!(
+            !lib.retrieve("wireless network", 6).unwrap().is_empty(),
+            "baseline retrieval works"
+        );
+
+        // Simulate an index that only got halfway before the app was killed:
+        // not indexed, checkpoint at the midpoint.
+        let n = lib.book(&id).unwrap().entry_count;
+        {
+            let mut m = lib.manifest.write().unwrap();
+            let b = m.books.iter_mut().find(|b| b.id == id).unwrap();
+            b.indexed = false;
+            b.indexed_upto = n / 2;
+        }
+        assert!(lib.books_needing_index().contains(&id), "resume is pending");
+
+        let p = lib.start_indexing(&id).unwrap();
+        wait(&p);
+        assert!(lib.book(&id).unwrap().indexed, "resume completes the index");
+        assert!(
+            !lib.retrieve("wireless network", 6).unwrap().is_empty(),
+            "content still retrievable after resuming"
+        );
     }
 }

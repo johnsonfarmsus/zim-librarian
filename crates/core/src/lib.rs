@@ -103,11 +103,21 @@ impl App {
         // picks up new books and reindexes stale ones.
         let bg = app.clone();
         std::thread::spawn(move || {
-            bg.reload_engine();
-            bg.library.scan_books_dir();
+            // Index BEFORE loading the model. The library is limited by storage,
+            // not RAM — any book that fits on disk can be indexed — but building
+            // a large book's index while the ~1 GB LLM is also resident is what
+            // jetsam-kills a small phone. So index first (extractive answers work
+            // meanwhile), then load the model once indexing settles.
+            //
+            // Already-registered books first: a small book (OSM) finishes fast
+            // and unlocks chat, whereas scanning may enqueue a large new one
+            // (WikiMed) that would otherwise grab the shared index writer first.
             for id in bg.library.books_needing_index() {
                 let _ = bg.library.start_indexing(&id);
             }
+            bg.library.scan_books_dir();
+            bg.library.wait_for_indexing();
+            bg.reload_engine();
         });
         Ok(app)
     }
@@ -279,5 +289,52 @@ mod tests {
         let healed = app.library.book(&id).unwrap();
         assert_eq!(healed.path, moved, "stored path healed to the new location");
         assert!(healed.path.exists());
+    }
+
+    /// The iOS reinstall case: the whole data dir migrates to a new container
+    /// path, so every book's stored absolute path is stale from the first
+    /// launch. `Library::open` must re-root them synchronously — before any UI
+    /// query — so the book isn't stranded "missing" until a background scan
+    /// happens to run. (Without this the chat composer stays locked on launch.)
+    #[test]
+    fn open_heals_stale_container_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data1 = tmp.path().join("container-A");
+        let data2 = tmp.path().join("container-B");
+
+        // First install: add a book and let it finish indexing.
+        let id = {
+            let app = App::open(data1.clone()).unwrap();
+            let book_file = app.library.books_dir().join("book.zim");
+            std::fs::copy(testdata("alpinelinux.zim"), &book_file).unwrap();
+            let id = app.library.add_book(&book_file).unwrap().id;
+            let progress = app.library.indexing.lock().unwrap().get(&id).unwrap().clone();
+            for _ in 0..1200 {
+                if progress.finished.load(Ordering::Relaxed) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            id
+        };
+
+        // Simulate the container changing: the OS migrates every file to a new
+        // path, but library.json still records the old (now-gone) absolute path.
+        std::fs::rename(&data1, &data2).unwrap();
+        let stored = {
+            let manifest: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(data2.join("library.json")).unwrap())
+                    .unwrap();
+            PathBuf::from(manifest["books"][0]["path"].as_str().unwrap())
+        };
+        assert!(stored.starts_with(&data1), "precondition: path points at old container");
+        assert!(!stored.exists(), "precondition: old path is gone");
+
+        // Second launch from the new container path heals it up front.
+        let app = App::open(data2.clone()).unwrap();
+        let healed = app.library.book(&id).unwrap();
+        assert_eq!(healed.path, app.library.books_dir().join("book.zim"));
+        assert!(healed.path.exists(), "healed path resolves in the new container");
+        assert!(healed.indexed, "healing keeps the existing index (no reindex needed)");
     }
 }
