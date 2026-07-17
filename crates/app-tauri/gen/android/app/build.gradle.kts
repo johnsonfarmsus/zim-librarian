@@ -13,6 +13,19 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Play upload signing. The keystore lives OUTSIDE this (public) repo; point
+// ZIM_KEYSTORE_PROPERTIES at a properties file with storeFile/storePassword/
+// keyAlias/keyPassword. Without it, release falls back to debug signing so
+// local builds keep working on machines without the keystore.
+val keystoreProperties = Properties().apply {
+    val path = System.getenv("ZIM_KEYSTORE_PROPERTIES")
+        ?: "/Volumes/WOW/zim-librarian-secrets/keystore.properties"
+    val propFile = file(path)
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+
 android {
     compileSdk = 36
     namespace = "us.johnsonfarms.zimlibrarian"
@@ -23,6 +36,16 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (keystoreProperties.getProperty("storeFile") != null) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -38,10 +61,11 @@ android {
         }
         getByName("release") {
             // Loopback-only server needs cleartext to 127.0.0.1 (see
-            // network_security_config.xml); debug-signed for local installs
-            // until a real upload keystore is configured.
+            // network_security_config.xml). Signed with the Play upload key
+            // when its keystore is present, else debug for local installs.
             manifestPlaceholders["usesCleartextTraffic"] = "true"
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }

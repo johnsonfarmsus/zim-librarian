@@ -7,3 +7,8 @@ crates/app-tauri/resources/*.gguf
 crates/app-tauri/gen/apple/build/
 crates/app-tauri/gen/apple/Externals/
 crates/app-tauri/gen/apple/assets/
+
+# Android signing — never commit keys (public repo)
+*.jks
+*.keystore
+keystore.properties
